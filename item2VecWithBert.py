@@ -2,8 +2,7 @@ import numpy as np
 import pandas as pd
 import os
 from gensim.models import Word2Vec
-from utils import load_item_index, load_plm_embedding, load_index_item
-
+from utils import load_item_index, load_plm_embedding, load_index_item, get_cosine_similarity
 
 def train_item2vec_with_bert_init(
     itemEmbedding,
@@ -81,16 +80,16 @@ if __name__ == '__main__':
     # 获取商品id和商品索引对应关系
     item2Index = load_item_index(feat_path)
     index2Item = load_index_item(feat_path)
-    # # 构建购物车
-    # df = pd.read_csv(os.path.join(raw_path, 'lianhua_order_item.csv'))
-    #
-    # baskets = (
-    #     df.groupby(['user_id', 'dt'])['prod_id']
-    #         .apply(lambda x: list(dict.fromkeys(map(str, x))))
-    #         .tolist()
-    # )
-    # print(baskets)
-    # trained_embedding, model = train_item2vec_with_bert_init(itemEmbedding, item2Index, baskets)
-    # trained_embedding.astype(np.float32).tofile(os.path.join(feat_path, "trained_linhua_item.featCLS"))
-    # item_similarity = get_cosine_similarity(itemEmbedding, index2Item, topk=10)
-    # item_similarity.to_csv("./item_cosine_similarity.csv", index=False, encoding="utf-8-sig")
+    # 构建购物车
+    df = pd.read_csv(os.path.join(raw_path, 'order_item.csv'))
+
+    baskets = (
+        df.groupby(['user_id', 'dt'])['prod_id']
+            .apply(lambda x: list(dict.fromkeys(map(str, x))))
+            .tolist()
+    )
+    print(baskets)
+    trained_embedding, model = train_item2vec_with_bert_init(itemEmbedding, item2Index, baskets)
+    trained_embedding.astype(np.float32).tofile(os.path.join(feat_path, "trained_item.featCLS"))
+    item_similarity = get_cosine_similarity(itemEmbedding, index2Item, topk=10)
+    item_similarity.to_csv("./item_cosine_similarity.csv", index=False, encoding="utf-8-sig")

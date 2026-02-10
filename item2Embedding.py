@@ -53,13 +53,13 @@ def generate_item_embedding(word_drop_ratio, emb_type, device, output_path, item
     else:
         suffix = '1'
 
-    file = os.path.join(output_path, 'lianhua_item' + '.feat' + suffix + emb_type)
+    file = os.path.join(output_path, 'item' + '.feat' + suffix + emb_type)
     embeddings.tofile(file)
     print("item embedding completed")
 
 
 if __name__ == '__main__':
-    csv_file_path = './dataset/raw/lianhua_item.csv'
+    csv_file_path = './dataset/raw/item.csv'
     output_path = './dataset/downstream/'
 
     # 构建商品和商品编号的对应关系

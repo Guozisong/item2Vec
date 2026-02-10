@@ -26,7 +26,7 @@ def load_plm(plm_path):
     return tokenizer, model
 
 
-def load_plm_embedding(path, file="lianhua_item.feat1CLS"):
+def load_plm_embedding(path, file="item.feat1CLS"):
     feat_path = os.path.join(path, file)
     loaded_feat = np.fromfile(feat_path, dtype=np.float32).reshape(-1, 768)
     return loaded_feat
@@ -63,6 +63,3 @@ def get_cosine_similarity(itemEmbedding, index2Item, topk=10):
     return df
 
 
-
-if __name__ == '__main__':
-    itemIndex("dataset/raw/lianhua.csv", './dataset/downstream/')

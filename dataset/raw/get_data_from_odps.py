@@ -32,5 +32,5 @@ if __name__ == '__main__':
     sql2 = '''select user_id, prod_id, dt from unisrec_raw_data;'''
 
     saved_path = "./"
-    get_df_from_odps(sql1, saved_path, "lianhua_item.csv")
-    get_df_from_odps(sql2, saved_path, "lianhua_order_item.csv")
+    get_df_from_odps(sql1, saved_path, "item.csv")
+    get_df_from_odps(sql2, saved_path, "order_item.csv")
