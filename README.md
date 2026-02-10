@@ -41,7 +41,7 @@ pip install -r requirements.txt
 ```bash
 python dataset/raw/get_data_from_odps.py
 ```
-该步骤会生成 `lianhua_item.csv` (商品信息) 和 `lianhua_order_item.csv` (订单数据)。
+该步骤会生成 `item.csv` (商品信息) 和 `order_item.csv` (订单数据)。
 
 ### 2. 生成 BERT Embedding
 运行 `item2Embedding.py` 利用商品描述生成初始的语义向量：
