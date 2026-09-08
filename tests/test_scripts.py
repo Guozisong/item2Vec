@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import types
@@ -12,9 +13,50 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPOSITORY_ROOT / "scripts"
 
 
-def test_run_pipeline_invokes_stages_in_order():
-    source = (SCRIPTS / "run_pipeline.sh").read_text()
-    assert source.index("fetch_data.sh") < source.index("generate_embeddings.sh") < source.index("train.sh")
+def _write_stage(path, name, exit_code=0):
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"printf '%s\\n' '{name}' >> \"${{PIPELINE_LOG}}\"\n"
+        f"exit {exit_code}\n"
+    )
+
+
+def _run_pipeline_with_stubs(tmp_path, generate_exit_code=0):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    pipeline = scripts / "run_pipeline.sh"
+    pipeline.write_text((SCRIPTS / "run_pipeline.sh").read_text())
+    _write_stage(scripts / "fetch_data.sh", "fetch")
+    _write_stage(scripts / "generate_embeddings.sh", "generate", generate_exit_code)
+    _write_stage(scripts / "train.sh", "train")
+    log = tmp_path / "pipeline.log"
+    result = subprocess.run(
+        ["/bin/bash", str(pipeline)],
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PIPELINE_LOG": str(log)},
+    )
+    return result, log.read_text().splitlines()
+
+
+def test_run_pipeline_executes_stages_in_order(tmp_path):
+    result, stages = _run_pipeline_with_stubs(tmp_path)
+
+    assert result.returncode == 0
+    assert stages == ["fetch", "generate", "train"]
+
+
+def test_run_pipeline_stops_after_failed_middle_stage(tmp_path):
+    result, stages = _run_pipeline_with_stubs(tmp_path, generate_exit_code=17)
+
+    assert result.returncode == 17
+    assert stages == ["fetch", "generate"]
+
+
+def test_gitignore_excludes_local_model_assets():
+    ignored_paths = (REPOSITORY_ROOT / ".gitignore").read_text().splitlines()
+    assert "dataset/m3e-base/" in ignored_paths
 
 
 def test_generate_embeddings_rejects_missing_item_csv(tmp_path):

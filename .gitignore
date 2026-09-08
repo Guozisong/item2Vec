@@ -5,4 +5,5 @@ __pycache__/
 venv/
 
 dataset/raw/*.csv
+dataset/m3e-base/
 dataset/downstream/
