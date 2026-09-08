@@ -6,10 +6,9 @@
 
 ```text
 .
-├── .env.example
 ├── dataset/
 │   ├── m3e-base/                  # 本地预训练模型
-│   ├── raw/                       # ODPS 下载的原始 CSV
+│   ├── raw/                       # 环境模板与 ODPS 原始 CSV
 │   └── downstream/                # 流水线生成的向量与映射
 ├── scripts/
 │   ├── fetch_data.sh              # 从 ODPS 获取原始数据
@@ -34,7 +33,13 @@
 python -m pip install -r requirements.txt
 ```
 
-将 M3E-base 模型放入 `dataset/m3e-base/`。数据下载脚本从 `dataset/raw/.env` 加载以下环境变量：
+将 M3E-base 模型放入 `dataset/m3e-base/`，并从模板创建本地环境文件：
+
+```bash
+cp dataset/raw/.env.example dataset/raw/.env
+```
+
+数据下载脚本从 `dataset/raw/.env` 加载以下环境变量：
 
 - `ALI_ACCESS_ID`（必填）
 - `ALI_SECRET_ACCESS_KEY`（必填）
