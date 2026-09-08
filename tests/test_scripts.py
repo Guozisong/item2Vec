@@ -9,6 +9,12 @@ from item2vec import data_fetch
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = REPOSITORY_ROOT / "scripts"
+
+
+def test_run_pipeline_invokes_stages_in_order():
+    source = (SCRIPTS / "run_pipeline.sh").read_text()
+    assert source.index("fetch_data.sh") < source.index("generate_embeddings.sh") < source.index("train.sh")
 
 
 def test_generate_embeddings_rejects_missing_item_csv(tmp_path):

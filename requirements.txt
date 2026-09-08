@@ -5,3 +5,4 @@ transformers
 gensim
 scikit-learn
 odps
+pytest

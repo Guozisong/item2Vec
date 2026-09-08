@@ -1,75 +1,79 @@
-# Item2Vec Project
+# Item2Vec 融合向量流水线
 
-本项目利用预训练的 BERT 模型 (M3E-base) 生成商品 Embedding，并结合用户行为数据 (购物篮) 训练 Item2Vec 模型，最终融合两者生成高质量的商品向量。
+本项目将 M3E/BERT 商品文本向量与 Item2Vec 用户行为向量融合，生成可用于商品召回和相似度检索的向量产物。对外操作统一通过 `scripts/` 下的 Bash 脚本完成，Python 实现位于 `src/item2vec/`。
 
 ## 项目结构
 
-```
-p:\pycharm_workSpace\item2Vec/
+```text
+.
+├── .env.example
 ├── dataset/
-│   ├── downstream/        # 存放生成的 Embedding 和索引文件
-│   ├── m3e-base/          # 预训练的 BERT 模型文件
-│   └── raw/               # 原始数据及数据获取脚本
-├── item2Embedding.py      # 使用 BERT 生成初始商品 Embedding
-├── item2VecWithBert.py    # 结合 BERT Embedding 和 Item2Vec 进行训练
-├── utils.py               # 工具函数 (加载模型、计算相似度等)
-└── requirements.txt       # 项目依赖
+│   ├── m3e-base/                  # 本地预训练模型
+│   ├── raw/                       # ODPS 下载的原始 CSV
+│   └── downstream/                # 流水线生成的向量与映射
+├── scripts/
+│   ├── fetch_data.sh              # 从 ODPS 获取原始数据
+│   ├── generate_embeddings.sh     # 生成商品文本向量和索引
+│   ├── train.sh                   # 训练并导出融合向量
+│   └── run_pipeline.sh            # 按顺序执行完整流水线
+├── src/item2vec/
+│   ├── data_fetch.py
+│   ├── embedding.py
+│   ├── io.py
+│   └── training.py
+├── tests/
+├── pyproject.toml
+└── requirements.txt
 ```
 
-## 环境依赖
+## 环境准备
 
-请使用以下命令安装所需依赖：
+建议在虚拟环境中安装依赖：
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-主要依赖库包括：
-- torch
-- pandas
-- numpy
-- transformers
-- gensim
-- scikit-learn
-- odps
+将 M3E-base 模型放入 `dataset/m3e-base/`。数据下载脚本从 `dataset/raw/.env` 加载以下环境变量：
 
-## 使用说明
+- `ALI_ACCESS_ID`（必填）
+- `ALI_SECRET_ACCESS_KEY`（必填）
+- `ALI_PROJECT`（必填）
+- `ALI_ENDPOINT`（可选）
 
-### 1. 数据准备
-如果是从 ODPS 获取数据，请配置 `dataset/raw/get_data_from_odps.py` 中的 `access_id`, `access_key` 等信息，然后运行该脚本下载数据：
+不要将凭据写入源码、日志或提交记录。
+
+## 运行流水线
+
+各阶段可独立运行：
 
 ```bash
-python dataset/raw/get_data_from_odps.py
+bash scripts/fetch_data.sh
+bash scripts/generate_embeddings.sh
+bash scripts/train.sh
 ```
-该步骤会生成 `item.csv` (商品信息) 和 `order_item.csv` (订单数据)。
 
-### 2. 生成 BERT Embedding
-运行 `item2Embedding.py` 利用商品描述生成初始的语义向量：
+也可以按“拉取数据 → 生成文本向量 → 训练融合向量”的顺序运行完整流水线：
 
 ```bash
-python item2Embedding.py
+bash scripts/run_pipeline.sh
 ```
-该步骤会：
-- 构建商品 ID 到索引的映射 (`item2index.json`, `index2item.json`)
-- 使用 M3E-base 模型生成商品描述的 Embedding (`lianhua_item.feat1CLS`)
 
-### 3. 训练 Item2Vec 并融合
-运行 `item2VecWithBert.py` 结合用户行为数据微调向量：
+脚本使用严格错误处理；任一阶段失败时，完整流水线会立即停止。
 
-```bash
-python item2VecWithBert.py
-```
-该步骤会：
-- 读取订单数据构建购物篮序列
-- 初始化 Word2Vec 模型
-- 融合 BERT 向量与 Word2Vec 向量
-- 基于用户行为进行微调训练
-- 输出最终的商品 Embedding
+## 输出文件
 
-## 核心逻辑
-- **item2Embedding.py**: 使用预训练模型 (如 M3E) 对商品描述文本进行编码，提取 CLS token 或 Mean Pooling 作为语义向量。
-- **item2VecWithBert.py**:
-    1. 将购物篮中的商品转换为索引序列。
-    2. 使用 Word2Vec 学习商品共现关系。
-    3. 将 BERT 语义向量作为先验知识，与 Word2Vec 向量进行加权融合。
-    4. 继续在购物篮序列上进行微调，使向量既包含语义信息又包含行为信息。
+数据拉取阶段在 `dataset/raw/` 生成：
+
+- `item.csv`：商品 ID 与商品描述
+- `order_item.csv`：用户商品行为序列来源
+
+文本向量与训练阶段在 `dataset/downstream/` 生成：
+
+- `item2index.json`：商品 ID 到向量索引的映射
+- `index2item.json`：向量索引到商品 ID 的映射
+- `item.feat1CLS`：M3E/BERT 商品文本向量
+- `trained_item.featCLS`：融合用户行为后的商品向量
+- `item_cosine_similarity.csv`：商品 Top-K 余弦相似结果
+
+原始 CSV、模型权重和下游生成物均为本地运行资产，不应提交到版本库。
