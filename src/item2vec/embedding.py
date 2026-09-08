@@ -2,7 +2,14 @@ import argparse
 import os
 import random
 
-from item2vec.io import load_plm, write_item_indexes
+from item2vec.io import load_item_index, load_plm, write_item_indexes
+
+
+def build_item_index(item_csv, output_dir):
+    import pandas as pd
+
+    write_item_indexes(pd.read_csv(item_csv)['prod_id'], output_dir)
+    return load_item_index(output_dir)
 
 
 def generate_item_embedding(word_drop_ratio, emb_type, device, output_path, item2index, item_text_list,
@@ -61,7 +68,7 @@ def main():
     import pandas as pd
     import torch
 
-    item2index = write_item_indexes(pd.read_csv(args.item_csv, dtype=str)['prod_id'], args.output_dir)
+    item2index = build_item_index(args.item_csv, args.output_dir)
     word_drop_ratio = -1
     emb_type = 'CLS'
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
