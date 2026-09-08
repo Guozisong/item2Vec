@@ -14,7 +14,7 @@ set -a
 source "${credentials_file}"
 set +a
 
-if [[ -z "${ALI_ACCESS_ID:-}" || -z "${ALI_SECRET_ACCESS_KEY:-}" ]]; then
+if [[ -z "${ALI_ACCESS_ID:-}" || -z "${ALI_SECRET_ACCESS_KEY:-}" || -z "${ALI_PROJECT:-}" ]]; then
     echo "Missing ODPS credentials" >&2
     exit 1
 fi
