@@ -6,6 +6,8 @@ COLUMNS = ["master_prod_id", "slave_prod_id", "similarity"]
 
 
 def validate_top_k(top_k, item_count):
+    if isinstance(top_k, (bool, np.bool_)) or not isinstance(top_k, (int, np.integer)):
+        raise ValueError("top_k must be an integer")
     if not 1 <= top_k < item_count:
         raise ValueError("top_k must satisfy 1 <= top_k < item_count")
 
@@ -18,6 +20,20 @@ def validate_artifacts(vectors, index2item):
     expected_keys = {str(index) for index in range(len(index2item))}
     if set(index2item) != expected_keys:
         raise ValueError("mapping keys must be contiguous string indexes")
+    if not np.isfinite(vectors).all():
+        raise ValueError("vectors must contain only finite values")
+
+
+def _normalize_vectors(vectors):
+    if not np.issubdtype(vectors.dtype, np.floating):
+        vectors = vectors.astype(np.float64)
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    return np.divide(
+        vectors,
+        norms,
+        out=np.zeros_like(vectors),
+        where=norms != 0,
+    )
 
 
 def rank_items(vectors, index2item, source_indexes, top_k, block_size=512):
@@ -27,14 +43,7 @@ def rank_items(vectors, index2item, source_indexes, top_k, block_size=512):
     if block_size < 1:
         raise ValueError("block_size must be at least 1")
 
-    float_vectors = vectors.astype(np.float64, copy=False)
-    norms = np.linalg.norm(float_vectors, axis=1, keepdims=True)
-    normalized = np.divide(
-        float_vectors,
-        norms,
-        out=np.zeros_like(float_vectors),
-        where=norms != 0,
-    )
+    normalized = _normalize_vectors(vectors)
     records = []
     source_indexes = list(source_indexes)
 

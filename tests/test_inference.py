@@ -55,6 +55,14 @@ def test_validate_artifacts_rejects_count_mismatch():
         validate_artifacts(np.ones((2, 3)), {"0": "A"})
 
 
+@pytest.mark.parametrize("invalid_value", [np.nan, np.inf])
+def test_validate_artifacts_rejects_non_finite_vectors(invalid_value):
+    vectors = np.array([[1.0, invalid_value], [0.0, 1.0]])
+
+    with pytest.raises(ValueError, match="finite"):
+        validate_artifacts(vectors, {"0": "A", "1": "B"})
+
+
 @pytest.mark.parametrize(
     ("vectors", "index2item", "message"),
     [
@@ -79,6 +87,26 @@ def test_rank_items_is_equivalent_across_block_sizes():
     actual = rank_items(vectors, index2item, source_indexes, top_k=2, block_size=3)
 
     pd.testing.assert_frame_equal(actual, expected)
+
+
+def test_normalization_preserves_float32_dtype():
+    from item2vec.inference import _normalize_vectors
+
+    vectors = np.array([[3.0, 4.0], [0.0, 0.0]], dtype=np.float32)
+
+    normalized = _normalize_vectors(vectors)
+
+    assert normalized.dtype == np.float32
+
+
+@pytest.mark.parametrize("top_k", [1.0, "1", True])
+def test_validate_top_k_rejects_non_integer_values(top_k):
+    with pytest.raises(ValueError, match="integer"):
+        validate_top_k(top_k, item_count=3)
+
+
+def test_validate_top_k_accepts_numpy_integer():
+    validate_top_k(np.int64(1), item_count=3)
 
 
 @pytest.mark.parametrize("top_k", [0, 3])
