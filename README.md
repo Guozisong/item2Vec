@@ -1,6 +1,6 @@
-# Item2Vec 融合向量流水线
+# Item2Vec 文本与行为分数融合流水线
 
-本项目将 M3E/BERT 商品文本向量与 Item2Vec 用户行为向量融合，生成可用于商品召回和相似度检索的向量产物。对外操作统一通过 `scripts/` 下的 Bash 脚本完成，Python 实现位于 `src/item2vec/`。
+本项目分别生成 M3E/BERT 商品文本向量和 Item2Vec 用户行为向量，在推理阶段融合两路余弦相似度，用于商品召回和相似度检索。对外操作统一通过 `scripts/` 下的 Bash 脚本完成，Python 实现位于 `src/item2vec/`。
 
 ## 项目结构
 
@@ -13,7 +13,7 @@
 ├── scripts/
 │   ├── fetch_data.sh              # 从 ODPS 获取原始数据
 │   ├── generate_embeddings.sh     # 生成商品文本向量和索引
-│   ├── train.sh                   # 训练并导出融合向量
+│   ├── train.sh                   # 独立训练商品行为向量
 │   ├── query_similar.sh           # 查询单个商品的相似商品
 │   ├── export_similarities.sh     # 批量导出商品相似度
 │   └── run_pipeline.sh            # 按顺序执行完整流水线
@@ -58,25 +58,31 @@ cp dataset/raw/.env.example dataset/raw/.env
 bash scripts/fetch_data.sh
 bash scripts/generate_embeddings.sh
 bash scripts/train.sh
-# 自定义：BERT 权重、窗口大小、负采样数、训练轮数
-bash scripts/train.sh 0.7 20 15 10
+# 自定义：行为向量维度、窗口大小、负采样数、训练轮数
+bash scripts/train.sh 128 20 15 10
 ```
 
-`train.sh` 的位置参数依次为 `BERT_WEIGHT WINDOW NEGATIVE EPOCHS`，默认值为
-`0.7 20 15 10`。省略参数时使用默认训练配置；指定训练参数时需按该顺序完整提供四个值。
+`train.sh` 的位置参数依次为 `VECTOR_SIZE WINDOW NEGATIVE EPOCHS`，默认值为
+`128 20 15 10`。省略参数时使用默认训练配置；指定训练参数时需按该顺序完整提供四个值。
 
-训练仅生成融合向量 `trained_item.featCLS`；相似度检索在需要时独立运行，并读取该训练产物：
+训练生成独立行为向量 `behavior_item.npz`。相似度检索同时读取文本向量和行为向量：
 
 ```bash
-bash scripts/query_similar.sh ITEM_ID 10
-bash scripts/export_similarities.sh 10 512
+bash scripts/query_similar.sh ITEM_ID 10 0.7
+bash scripts/export_similarities.sh 10 512 0.7
 ```
 
-`query_similar.sh` 保持 `ITEM_ID [TOPK]` 用法，省略 `TOPK` 时默认为 `10`。
-`export_similarities.sh` 的位置参数为 `[TOPK [BLOCK_SIZE]]`，默认值分别为 `10` 和
-`512`；省略任一参数时使用其默认值。
+`query_similar.sh` 的位置参数为 `ITEM_ID [TOPK [TEXT_WEIGHT]]`；`export_similarities.sh`
+的位置参数为 `[TOPK [BLOCK_SIZE [TEXT_WEIGHT]]]`。默认 `TOPK=10`、
+`BLOCK_SIZE=512`、`TEXT_WEIGHT=0.7`。最终分数为：
 
-也可以按“拉取数据 → 生成文本向量 → 训练融合向量”的顺序运行完整流水线；流水线在训练完成后停止：
+```text
+TEXT_WEIGHT × 文本余弦相似度 + (1 - TEXT_WEIGHT) × 行为余弦相似度
+```
+
+当源商品或候选商品缺少有效行为向量时，该商品对使用完整的文本相似度作为回退结果。
+
+也可以按“拉取数据 → 生成文本向量 → 训练行为向量”的顺序运行完整流水线；流水线在训练完成后停止：
 
 ```bash
 bash scripts/run_pipeline.sh
@@ -96,7 +102,7 @@ bash scripts/run_pipeline.sh
 - `item2index.json`：商品 ID 到向量索引的映射
 - `index2item.json`：向量索引到商品 ID 的映射
 - `item.feat1CLS`：M3E/BERT 商品文本向量
-- `trained_item.featCLS`：融合用户行为后的商品向量
+- `behavior_item.npz`：独立 Item2Vec 行为向量及对应商品 ID；无有效行为信号的商品行为向量为零
 - `query_<ITEM_ID>.csv`：单商品 Top-K 余弦相似结果
 - `item_cosine_similarity.csv`：全量商品 Top-K 余弦相似结果
 

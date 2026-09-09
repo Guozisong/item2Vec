@@ -119,7 +119,8 @@ def _run_inference_script_with_stub(tmp_path, script_name, arguments):
     )
     downstream_dir = tmp_path / "dataset" / "downstream"
     downstream_dir.mkdir(parents=True)
-    (downstream_dir / "trained_item.featCLS").write_bytes(b"vectors")
+    (downstream_dir / "item.feat1CLS").write_bytes(b"vectors")
+    (downstream_dir / "behavior_item.npz").write_bytes(b"vectors")
     (downstream_dir / "index2item.json").write_text("{}")
     log = tmp_path / "inference-args.log"
 
@@ -144,6 +145,8 @@ def test_query_script_forwards_item_id_and_top_k(tmp_path):
         "A/../B",
         "--top-k",
         "7",
+        "--text-weight",
+        "0.7",
     ]
 
 
@@ -166,13 +169,15 @@ def test_export_script_forwards_top_k_and_block_size(
         expected_top_k,
         "--block-size",
         expected_block_size,
+        "--text-weight",
+        "0.7",
     ]
 
 
 @pytest.mark.parametrize(
     ("script_name", "arguments"),
-    [("query_similar.sh", []), ("query_similar.sh", ["A", "2", "extra"]),
-     ("export_similarities.sh", ["2", "extra", "too-many"])],
+    [("query_similar.sh", []), ("query_similar.sh", ["A", "2", "0.7", "extra"]),
+     ("export_similarities.sh", ["2", "512", "0.7", "too-many"])],
 )
 def test_inference_scripts_reject_invalid_argument_counts(tmp_path, script_name, arguments):
     result, forwarded = _run_inference_script_with_stub(tmp_path, script_name, arguments)
@@ -223,16 +228,16 @@ def test_train_script_forwards_default_parameters(tmp_path):
     assert result.returncode == 0
     assert arguments == [
         str(tmp_path / "dataset" / "raw"), str(tmp_path / "dataset" / "downstream"),
-        "--bert-weight", "0.7", "--window", "20", "--negative", "15", "--epochs", "10",
+        "--vector-size", "128", "--window", "20", "--negative", "15", "--epochs", "10",
     ]
 
 
 def test_train_script_forwards_custom_parameters(tmp_path):
-    result, arguments = _run_train_script_with_stub(tmp_path, ["0.3", "8", "4", "6"])
+    result, arguments = _run_train_script_with_stub(tmp_path, ["64", "8", "4", "6"])
 
     assert result.returncode == 0
     assert arguments[-8:] == [
-        "--bert-weight", "0.3", "--window", "8", "--negative", "4", "--epochs", "6",
+        "--vector-size", "64", "--window", "8", "--negative", "4", "--epochs", "6",
     ]
 
 

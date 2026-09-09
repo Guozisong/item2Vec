@@ -11,7 +11,12 @@ from item2vec.inference import COLUMNS, rank_items, validate_artifacts, validate
 def _write_artifacts(path, item_ids, vectors=None):
     if vectors is None:
         vectors = np.zeros((len(item_ids), 768), dtype=np.float32)
-    np.asarray(vectors, dtype=np.float32).tofile(path / "trained_item.featCLS")
+    np.asarray(vectors, dtype=np.float32).tofile(path / "item.feat1CLS")
+    np.savez(
+        path / "behavior_item.npz",
+        vectors=np.zeros((len(item_ids), 3), dtype=np.float32),
+        item_ids=np.asarray([str(item_id) for item_id in item_ids]),
+    )
     (path / "index2item.json").write_text(
         json.dumps({str(index): item_id for index, item_id in enumerate(item_ids)}),
         encoding="utf-8",
@@ -134,13 +139,14 @@ def test_load_trained_artifacts_reads_vectors_and_mapping(tmp_path):
     vectors[1, 1] = 1.0
     _write_artifacts(tmp_path, ["A", "B"], vectors)
 
-    actual_vectors, actual_mapping = inference.load_trained_artifacts(tmp_path)
+    actual_vectors, actual_mapping, behavior_vectors = inference.load_trained_artifacts(tmp_path)
 
     np.testing.assert_array_equal(actual_vectors, vectors)
     assert actual_mapping == {"0": "A", "1": "B"}
+    assert behavior_vectors.shape == (2, 3)
 
 
-@pytest.mark.parametrize("missing_name", ["trained_item.featCLS", "index2item.json"])
+@pytest.mark.parametrize("missing_name", ["item.feat1CLS", "index2item.json", "behavior_item.npz"])
 def test_load_trained_artifacts_reports_missing_files(tmp_path, missing_name):
     _write_artifacts(tmp_path, ["A", "B"])
     (tmp_path / missing_name).unlink()
@@ -263,11 +269,12 @@ def test_main_forwards_export_block_size(
 ):
     captured = {}
 
-    def fake_export_all(downstream_dir, top_k, block_size):
+    def fake_export_all(downstream_dir, top_k, block_size, text_weight):
         captured.update(
             downstream_dir=downstream_dir,
             top_k=top_k,
             block_size=block_size,
+            text_weight=text_weight,
         )
 
     monkeypatch.setattr(inference, "export_all", fake_export_all)
@@ -278,4 +285,5 @@ def test_main_forwards_export_block_size(
         "downstream_dir": "dataset/downstream",
         "top_k": expected_top_k,
         "block_size": expected_block_size,
+        "text_weight": 0.7,
     }
