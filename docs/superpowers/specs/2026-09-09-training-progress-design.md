@@ -6,7 +6,9 @@ Replace verbose training data dumps with concise Chinese runtime summaries and s
 
 ## Scope
 
-Add `tqdm` to runtime dependencies. Wrap the per-batch loop in `generate_item_embedding` with a progress bar labeled `生成商品向量`, measured in batches. Wrap the per-order loop in `build_basket_indexes` with a progress bar labeled `构建训练购物篮`, measured in shopping baskets.
+Pin the project's direct runtime and test dependencies to the versions validated in the current environment: `torch==2.14.0`, `pandas==2.3.3`, `numpy==2.2.6`, `transformers==5.16.1`, `gensim==4.4.0`, `scikit-learn==1.7.2`, `odps==4.0.0`, `pytest==9.1.1`, and `tqdm==4.70.0`. Do not add CUDA libraries, system packages, or other transitive dependencies to `requirements.txt`.
+
+Wrap the per-batch loop in `generate_item_embedding` with a progress bar labeled `生成商品向量`, measured in batches. Wrap the per-order loop in `build_basket_indexes` with a progress bar labeled `构建训练购物篮`, measured in shopping baskets.
 
 The wrappers cover existing iteration only; batching, filtering, model settings, device selection, and output formats remain unchanged.
 
