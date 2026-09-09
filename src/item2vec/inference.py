@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from item2vec.io import load_index_item, load_plm_embedding
 
@@ -56,7 +57,14 @@ def _normalize_vectors(vectors):
     )
 
 
-def rank_items(vectors, index2item, source_indexes, top_k, block_size=512):
+def rank_items(
+    vectors,
+    index2item,
+    source_indexes,
+    top_k,
+    block_size=512,
+    show_progress=False,
+):
     vectors = np.asarray(vectors)
     validate_artifacts(vectors, index2item)
     validate_top_k(top_k, vectors.shape[0])
@@ -67,7 +75,16 @@ def rank_items(vectors, index2item, source_indexes, top_k, block_size=512):
     records = []
     source_indexes = list(source_indexes)
 
-    for block_start in range(0, len(source_indexes), block_size):
+    block_starts = range(0, len(source_indexes), block_size)
+    if show_progress:
+        block_starts = tqdm(
+            block_starts,
+            desc="计算商品相似度",
+            unit="块",
+            total=(len(source_indexes) + block_size - 1) // block_size,
+        )
+
+    for block_start in block_starts:
         block_sources = source_indexes[block_start:block_start + block_size]
         similarities = normalized[block_sources] @ normalized.T
         for block_index, scores in enumerate(similarities):
@@ -88,6 +105,7 @@ def rank_items(vectors, index2item, source_indexes, top_k, block_size=512):
 
 
 def query_item(downstream_dir, item_id, top_k=10):
+    print("正在加载训练向量与索引…")
     vectors, index2item = load_trained_artifacts(downstream_dir)
     requested_id = str(item_id)
     source_index = next(
@@ -101,23 +119,29 @@ def query_item(downstream_dir, item_id, top_k=10):
     if source_index is None:
         raise ValueError(f"Unknown item ID: {requested_id}")
 
+    print(f"正在查询商品 {requested_id} 的 Top-{top_k} 相似商品…")
     result = rank_items(vectors, index2item, [int(source_index)], top_k)
     output_path = Path(downstream_dir) / f"query_{safe_item_filename(item_id)}.csv"
     result.to_csv(output_path, index=False)
+    print(f"查询完成，共写入 {len(result)} 条结果：{output_path}")
     return output_path
 
 
 def export_all(downstream_dir, top_k=10, block_size=512):
+    print("正在加载训练向量与索引…")
     vectors, index2item = load_trained_artifacts(downstream_dir)
+    print("正在计算全量商品相似度…")
     result = rank_items(
         vectors,
         index2item,
         range(vectors.shape[0]),
         top_k,
         block_size=block_size,
+        show_progress=True,
     )
     output_path = Path(downstream_dir) / "item_cosine_similarity.csv"
     result.to_csv(output_path, index=False)
+    print(f"导出完成，共写入 {len(result)} 条结果：{output_path}")
     return output_path
 
 

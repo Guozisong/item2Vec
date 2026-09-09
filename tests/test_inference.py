@@ -188,6 +188,22 @@ def test_query_item_rejects_unknown_item_id(tmp_path):
         inference.query_item(tmp_path, "missing", top_k=1)
 
 
+def test_query_item_prints_chinese_status_messages(tmp_path, capsys):
+    vectors = np.zeros((3, 768), dtype=np.float32)
+    vectors[0, :2] = [1.0, 0.0]
+    vectors[1, :2] = [0.8, 0.6]
+    vectors[2, :2] = [0.0, 1.0]
+    _write_artifacts(tmp_path, ["A", "B", "C"], vectors)
+
+    output_path = inference.query_item(tmp_path, "A", top_k=2)
+
+    assert capsys.readouterr().out == (
+        "正在加载训练向量与索引…\n"
+        "正在查询商品 A 的 Top-2 相似商品…\n"
+        f"查询完成，共写入 2 条结果：{output_path}\n"
+    )
+
+
 def test_export_all_writes_all_sources_with_exact_schema(tmp_path):
     vectors = np.zeros((3, 768), dtype=np.float32)
     vectors[0, :2] = [1.0, 0.0]
@@ -205,6 +221,34 @@ def test_export_all_writes_all_sources_with_exact_schema(tmp_path):
         ["B", "A"],
         ["C", "B"],
     ]
+
+
+def test_export_all_shows_block_progress_and_chinese_status_messages(
+    monkeypatch, tmp_path, capsys
+):
+    vectors = np.zeros((3, 768), dtype=np.float32)
+    vectors[0, :2] = [1.0, 0.0]
+    vectors[1, :2] = [0.8, 0.6]
+    vectors[2, :2] = [0.0, 1.0]
+    _write_artifacts(tmp_path, ["A", "B", "C"], vectors)
+    progress_calls = []
+
+    def fake_tqdm(iterable, **kwargs):
+        progress_calls.append(kwargs)
+        return iterable
+
+    monkeypatch.setattr(inference, "tqdm", fake_tqdm)
+
+    output_path = inference.export_all(tmp_path, top_k=1, block_size=1)
+
+    assert progress_calls == [
+        {"desc": "计算商品相似度", "unit": "块", "total": 3}
+    ]
+    assert capsys.readouterr().out == (
+        "正在加载训练向量与索引…\n"
+        "正在计算全量商品相似度…\n"
+        f"导出完成，共写入 3 条结果：{output_path}\n"
+    )
 
 
 @pytest.mark.parametrize(
