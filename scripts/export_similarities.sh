@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -gt 1 ]]; then
-    echo "Usage: $0 [TOPK]" >&2
+if [[ $# -gt 2 ]]; then
+    echo "Usage: $0 [TOPK [BLOCK_SIZE]]" >&2
     exit 2
 fi
 
@@ -21,4 +21,6 @@ if [[ ! -f "${downstream_dir}/index2item.json" ]]; then
 fi
 
 cd "${repository_root}"
-python -m item2vec.inference export "${downstream_dir}" --top-k "${1:-10}"
+python -m item2vec.inference export "${downstream_dir}" \
+    --top-k "${1:-10}" \
+    --block-size "${2:-512}"
