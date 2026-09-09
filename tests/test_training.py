@@ -13,6 +13,24 @@ def test_build_basket_indexes_drops_unknown_and_invalid_lengths():
     assert build_basket_indexes(baskets, item2index) == [["0", "1"]]
 
 
+def test_build_basket_indexes_shows_chinese_progress(monkeypatch):
+    captured = {}
+
+    def fake_tqdm(iterable, **kwargs):
+        captured["iterable"] = iterable
+        captured["kwargs"] = kwargs
+        return iterable
+
+    baskets = [["A", "B"]]
+    monkeypatch.setattr(training, "tqdm", fake_tqdm)
+
+    assert build_basket_indexes(baskets, {"A": 0, "B": 1}) == [["0", "1"]]
+    assert captured == {
+        "iterable": baskets,
+        "kwargs": {"desc": "构建训练购物篮", "unit": "个", "total": 1},
+    }
+
+
 def test_write_trained_embedding_writes_float32_artifact_without_similarity_csv(tmp_path):
     embedding = np.array([[1.5, 2.5], [3.5, 4.5]], dtype=np.float64)
 
@@ -61,7 +79,7 @@ def test_train_uses_configured_word2vec_parameters(monkeypatch):
     assert captured["train"]["epochs"] == 6
 
 
-def test_main_forwards_named_training_options(monkeypatch, tmp_path):
+def test_main_forwards_named_training_options_and_prints_summaries(monkeypatch, tmp_path, capsys):
     captured = {}
 
     class FakeGroupedBaskets:
@@ -76,6 +94,13 @@ def test_main_forwards_named_training_options(monkeypatch, tmp_path):
             return [["A", "B"]]
 
     class FakeDataframe:
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, column):
+            assert column == "user_id"
+            return types.SimpleNamespace(nunique=lambda: 1)
+
         def groupby(self, _columns):
             return FakeGroupedBaskets()
 
@@ -94,7 +119,12 @@ def test_main_forwards_named_training_options(monkeypatch, tmp_path):
             or (embedding, object())
         ),
     )
-    monkeypatch.setattr(training, "write_trained_embedding", lambda embedding, path: captured.update(output=(embedding, path)))
+    output_path = tmp_path / "downstream" / "trained_item.featCLS"
+    monkeypatch.setattr(
+        training,
+        "write_trained_embedding",
+        lambda embedding, path: captured.update(output=(embedding, path)) or output_path,
+    )
 
     training.main([
         str(tmp_path / "raw"), str(tmp_path / "downstream"),
@@ -105,3 +135,8 @@ def test_main_forwards_named_training_options(monkeypatch, tmp_path):
     assert captured["window"] == 9
     assert captured["negative"] == 3
     assert captured["epochs"] == 7
+    assert capsys.readouterr().out == (
+        "已读取 1 条行为，包含 1 个用户。\n"
+        "已构建 1 个有效购物篮，包含 2 个商品向量。\n"
+        f"训练向量已保存至：{output_path}\n"
+    )

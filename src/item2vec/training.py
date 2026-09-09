@@ -3,13 +3,14 @@ import os
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 from item2vec.io import load_item_index, load_plm_embedding
 
 
 def build_basket_indexes(baskets, item2index):
     basket_indexes = []
-    for order in baskets:
+    for order in tqdm(baskets, desc='构建训练购物篮', unit='个', total=len(baskets)):
         sequence = [str(item2index[code]) for code in order if code in item2index]
         if 2 <= len(sequence) <= 20:
             basket_indexes.append(sequence)
@@ -75,17 +76,15 @@ def main(argv=None):
     import pandas as pd
 
     item_embedding = load_plm_embedding(args.downstream_dir)
-    print(type(item_embedding))
-    print(item_embedding.shape)
-    print(item_embedding[0, :])
     item2index = load_item_index(args.downstream_dir)
     dataframe = pd.read_csv(os.path.join(args.raw_data_dir, 'order_item.csv'))
+    print(f'已读取 {len(dataframe)} 条行为，包含 {dataframe["user_id"].nunique()} 个用户。')
     baskets = (
         dataframe.groupby(['user_id', 'dt'])['prod_id']
         .apply(lambda values: list(dict.fromkeys(map(str, values))))
         .tolist()
     )
-    print(baskets)
+    print(f'已构建 {len(baskets)} 个有效购物篮，包含 {item_embedding.shape[0]} 个商品向量。')
     trained_embedding, _model = train_item2vec_with_bert_init(
         item_embedding,
         item2index,
@@ -95,7 +94,8 @@ def main(argv=None):
         negative=args.negative,
         epochs=args.epochs,
     )
-    write_trained_embedding(trained_embedding, args.downstream_dir)
+    output_path = write_trained_embedding(trained_embedding, args.downstream_dir)
+    print(f'训练向量已保存至：{output_path}')
 
 
 if __name__ == '__main__':
