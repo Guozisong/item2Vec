@@ -133,6 +133,7 @@ def _build_parser():
     export_parser = subparsers.add_parser("export")
     export_parser.add_argument("downstream_dir")
     export_parser.add_argument("--top-k", type=int, default=10)
+    export_parser.add_argument("--block-size", type=int, default=512)
     return parser
 
 
@@ -141,7 +142,7 @@ def main(argv=None):
     if args.command == "query":
         query_item(args.downstream_dir, args.item_id, top_k=args.top_k)
     else:
-        export_all(args.downstream_dir, top_k=args.top_k)
+        export_all(args.downstream_dir, top_k=args.top_k, block_size=args.block_size)
 
 
 if __name__ == "__main__":

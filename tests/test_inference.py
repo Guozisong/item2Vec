@@ -205,3 +205,33 @@ def test_export_all_writes_all_sources_with_exact_schema(tmp_path):
         ["B", "A"],
         ["C", "B"],
     ]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_top_k", "expected_block_size"),
+    [
+        (["export", "dataset/downstream"], 10, 512),
+        (["export", "dataset/downstream", "--top-k", "6", "--block-size", "128"], 6, 128),
+    ],
+)
+def test_main_forwards_export_block_size(
+    monkeypatch, argv, expected_top_k, expected_block_size
+):
+    captured = {}
+
+    def fake_export_all(downstream_dir, top_k, block_size):
+        captured.update(
+            downstream_dir=downstream_dir,
+            top_k=top_k,
+            block_size=block_size,
+        )
+
+    monkeypatch.setattr(inference, "export_all", fake_export_all)
+
+    inference.main(argv)
+
+    assert captured == {
+        "downstream_dir": "dataset/downstream",
+        "top_k": expected_top_k,
+        "block_size": expected_block_size,
+    }

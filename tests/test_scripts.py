@@ -147,9 +147,15 @@ def test_query_script_forwards_item_id_and_top_k(tmp_path):
     ]
 
 
-def test_export_script_forwards_top_k(tmp_path):
+@pytest.mark.parametrize(
+    ("arguments", "expected_top_k", "expected_block_size"),
+    [([], "10", "512"), (["6", "128"], "6", "128")],
+)
+def test_export_script_forwards_top_k_and_block_size(
+    tmp_path, arguments, expected_top_k, expected_block_size
+):
     result, arguments = _run_inference_script_with_stub(
-        tmp_path, "export_similarities.sh", ["6"]
+        tmp_path, "export_similarities.sh", arguments
     )
 
     assert result.returncode == 0
@@ -157,14 +163,16 @@ def test_export_script_forwards_top_k(tmp_path):
         "export",
         str(tmp_path / "dataset" / "downstream"),
         "--top-k",
-        "6",
+        expected_top_k,
+        "--block-size",
+        expected_block_size,
     ]
 
 
 @pytest.mark.parametrize(
     ("script_name", "arguments"),
     [("query_similar.sh", []), ("query_similar.sh", ["A", "2", "extra"]),
-     ("export_similarities.sh", ["2", "extra"])],
+     ("export_similarities.sh", ["2", "extra", "too-many"])],
 )
 def test_inference_scripts_reject_invalid_argument_counts(tmp_path, script_name, arguments):
     result, forwarded = _run_inference_script_with_stub(tmp_path, script_name, arguments)
