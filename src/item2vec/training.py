@@ -25,10 +25,12 @@ def train_item2vec_with_bert_init(
     window=20,
     negative=15,
     epochs=10,
+    basket_index=None,
 ):
     from gensim.models import Word2Vec
 
-    basket_index = build_basket_indexes(baskets, item2Index)
+    if basket_index is None:
+        basket_index = build_basket_indexes(baskets, item2Index)
     model = Word2Vec(
         sentences=basket_index,
         vector_size=itemEmbedding.shape[1],
@@ -84,7 +86,8 @@ def main(argv=None):
         .apply(lambda values: list(dict.fromkeys(map(str, values))))
         .tolist()
     )
-    print(f'已构建 {len(baskets)} 个有效购物篮，包含 {item_embedding.shape[0]} 个商品向量。')
+    basket_index = build_basket_indexes(baskets, item2index)
+    print(f'已构建 {len(basket_index)} 个有效购物篮，包含 {item_embedding.shape[0]} 个商品向量。')
     trained_embedding, _model = train_item2vec_with_bert_init(
         item_embedding,
         item2index,
@@ -93,6 +96,7 @@ def main(argv=None):
         window=args.window,
         negative=args.negative,
         epochs=args.epochs,
+        basket_index=basket_index,
     )
     output_path = write_trained_embedding(trained_embedding, args.downstream_dir)
     print(f'训练向量已保存至：{output_path}')
