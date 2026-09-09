@@ -16,17 +16,25 @@ def build_basket_indexes(baskets, item2index):
     return basket_indexes
 
 
-def train_item2vec_with_bert_init(itemEmbedding, item2Index, baskets, lambda_bert=0.7):
+def train_item2vec_with_bert_init(
+    itemEmbedding,
+    item2Index,
+    baskets,
+    lambda_bert=0.7,
+    window=20,
+    negative=15,
+    epochs=10,
+):
     from gensim.models import Word2Vec
 
     basket_index = build_basket_indexes(baskets, item2Index)
     model = Word2Vec(
         sentences=basket_index,
         vector_size=itemEmbedding.shape[1],
-        window=20,
+        window=window,
         min_count=5,
         sg=1,
-        negative=15,
+        negative=negative,
         sample=1e-4,
         workers=8,
         epochs=1,
@@ -38,7 +46,7 @@ def train_item2vec_with_bert_init(itemEmbedding, item2Index, baskets, lambda_ber
     model.train(
         basket_index,
         total_examples=len(basket_index),
-        epochs=10,
+        epochs=epochs,
         start_alpha=0.002,
         end_alpha=0.0005
     )
@@ -54,11 +62,15 @@ def write_trained_embedding(embedding, downstream_dir):
     return output_path
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('raw_data_dir')
     parser.add_argument('downstream_dir')
-    args = parser.parse_args()
+    parser.add_argument('--bert-weight', type=float, default=0.7)
+    parser.add_argument('--window', type=int, default=20)
+    parser.add_argument('--negative', type=int, default=15)
+    parser.add_argument('--epochs', type=int, default=10)
+    args = parser.parse_args(argv)
 
     import pandas as pd
 
@@ -74,7 +86,15 @@ def main():
         .tolist()
     )
     print(baskets)
-    trained_embedding, _model = train_item2vec_with_bert_init(item_embedding, item2index, baskets)
+    trained_embedding, _model = train_item2vec_with_bert_init(
+        item_embedding,
+        item2index,
+        baskets,
+        lambda_bert=args.bert_weight,
+        window=args.window,
+        negative=args.negative,
+        epochs=args.epochs,
+    )
     write_trained_embedding(trained_embedding, args.downstream_dir)
 
 
