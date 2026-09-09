@@ -14,6 +14,8 @@
 │   ├── fetch_data.sh              # 从 ODPS 获取原始数据
 │   ├── generate_embeddings.sh     # 生成商品文本向量和索引
 │   ├── train.sh                   # 训练并导出融合向量
+│   ├── query_similar.sh           # 查询单个商品的相似商品
+│   ├── export_similarities.sh     # 批量导出商品相似度
 │   └── run_pipeline.sh            # 按顺序执行完整流水线
 ├── src/item2vec/
 │   ├── data_fetch.py
@@ -58,7 +60,14 @@ bash scripts/generate_embeddings.sh
 bash scripts/train.sh
 ```
 
-也可以按“拉取数据 → 生成文本向量 → 训练融合向量”的顺序运行完整流水线：
+训练仅生成融合向量 `trained_item.featCLS`；相似度检索在需要时独立运行，并读取该训练产物：
+
+```bash
+bash scripts/query_similar.sh ITEM_ID 10
+bash scripts/export_similarities.sh 10
+```
+
+也可以按“拉取数据 → 生成文本向量 → 训练融合向量”的顺序运行完整流水线；流水线在训练完成后停止：
 
 ```bash
 bash scripts/run_pipeline.sh
@@ -79,6 +88,7 @@ bash scripts/run_pipeline.sh
 - `index2item.json`：向量索引到商品 ID 的映射
 - `item.feat1CLS`：M3E/BERT 商品文本向量
 - `trained_item.featCLS`：融合用户行为后的商品向量
-- `item_cosine_similarity.csv`：商品 Top-K 余弦相似结果
+- `query_<ITEM_ID>.csv`：单商品 Top-K 余弦相似结果
+- `item_cosine_similarity.csv`：全量商品 Top-K 余弦相似结果
 
 原始 CSV、模型权重和下游生成物均为本地运行资产，不应提交到版本库。

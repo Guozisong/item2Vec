@@ -1,7 +1,10 @@
 import argparse
 import os
+from pathlib import Path
 
-from item2vec.io import get_cosine_similarity, load_index_item, load_item_index, load_plm_embedding
+import numpy as np
+
+from item2vec.io import load_item_index, load_plm_embedding
 
 
 def build_basket_indexes(baskets, item2index):
@@ -45,13 +48,18 @@ def train_item2vec_with_bert_init(itemEmbedding, item2Index, baskets, lambda_ber
     return final_embedding, model
 
 
+def write_trained_embedding(embedding, downstream_dir):
+    output_path = Path(downstream_dir) / "trained_item.featCLS"
+    np.asarray(embedding, dtype=np.float32).tofile(output_path)
+    return output_path
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('raw_data_dir')
     parser.add_argument('downstream_dir')
     args = parser.parse_args()
 
-    import numpy as np
     import pandas as pd
 
     item_embedding = load_plm_embedding(args.downstream_dir)
@@ -59,7 +67,6 @@ def main():
     print(item_embedding.shape)
     print(item_embedding[0, :])
     item2index = load_item_index(args.downstream_dir)
-    index2item = load_index_item(args.downstream_dir)
     dataframe = pd.read_csv(os.path.join(args.raw_data_dir, 'order_item.csv'))
     baskets = (
         dataframe.groupby(['user_id', 'dt'])['prod_id']
@@ -67,11 +74,8 @@ def main():
         .tolist()
     )
     print(baskets)
-    trained_embedding, model = train_item2vec_with_bert_init(item_embedding, item2index, baskets)
-    trained_embedding.astype(np.float32).tofile(os.path.join(args.downstream_dir, 'trained_item.featCLS'))
-    item_similarity = get_cosine_similarity(item_embedding, index2item, topk=10)
-    item_similarity.to_csv(os.path.join(args.downstream_dir, 'item_cosine_similarity.csv'), index=False,
-                           encoding='utf-8-sig')
+    trained_embedding, _model = train_item2vec_with_bert_init(item_embedding, item2index, baskets)
+    write_trained_embedding(trained_embedding, args.downstream_dir)
 
 
 if __name__ == '__main__':

@@ -99,3 +99,76 @@ def test_data_fetch_main_rejects_missing_project_before_fetch(monkeypatch):
 
     with pytest.raises(RuntimeError, match='Missing ODPS credentials'):
         data_fetch.main()
+
+
+def _run_inference_script_with_stub(tmp_path, script_name, arguments):
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    script = scripts_dir / script_name
+    script.write_text((SCRIPTS / script_name).read_text())
+    script.chmod(0o755)
+
+    package_dir = tmp_path / "src" / "item2vec"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "inference.py").write_text(
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['INFERENCE_ARGS_LOG']).write_text('\\n'.join(sys.argv[1:]))\n"
+    )
+    downstream_dir = tmp_path / "dataset" / "downstream"
+    downstream_dir.mkdir(parents=True)
+    (downstream_dir / "trained_item.featCLS").write_bytes(b"vectors")
+    (downstream_dir / "index2item.json").write_text("{}")
+    log = tmp_path / "inference-args.log"
+
+    result = subprocess.run(
+        [str(script), *arguments],
+        text=True,
+        capture_output=True,
+        env={**os.environ, "INFERENCE_ARGS_LOG": str(log)},
+    )
+    return result, log.read_text().splitlines() if log.exists() else []
+
+
+def test_query_script_forwards_item_id_and_top_k(tmp_path):
+    result, arguments = _run_inference_script_with_stub(
+        tmp_path, "query_similar.sh", ["A/../B", "7"]
+    )
+
+    assert result.returncode == 0
+    assert arguments == [
+        "query",
+        str(tmp_path / "dataset" / "downstream"),
+        "A/../B",
+        "--top-k",
+        "7",
+    ]
+
+
+def test_export_script_forwards_top_k(tmp_path):
+    result, arguments = _run_inference_script_with_stub(
+        tmp_path, "export_similarities.sh", ["6"]
+    )
+
+    assert result.returncode == 0
+    assert arguments == [
+        "export",
+        str(tmp_path / "dataset" / "downstream"),
+        "--top-k",
+        "6",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("script_name", "arguments"),
+    [("query_similar.sh", []), ("query_similar.sh", ["A", "2", "extra"]),
+     ("export_similarities.sh", ["2", "extra"])],
+)
+def test_inference_scripts_reject_invalid_argument_counts(tmp_path, script_name, arguments):
+    result, forwarded = _run_inference_script_with_stub(tmp_path, script_name, arguments)
+
+    assert result.returncode != 0
+    assert "Usage:" in result.stderr
+    assert forwarded == []
