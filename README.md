@@ -58,14 +58,23 @@ cp dataset/raw/.env.example dataset/raw/.env
 bash scripts/fetch_data.sh
 bash scripts/generate_embeddings.sh
 bash scripts/train.sh
+# 自定义：BERT 权重、窗口大小、负采样数、训练轮数
+bash scripts/train.sh 0.7 20 15 10
 ```
+
+`train.sh` 的位置参数依次为 `BERT_WEIGHT WINDOW NEGATIVE EPOCHS`，默认值为
+`0.7 20 15 10`。省略参数时使用默认训练配置；指定训练参数时需按该顺序完整提供四个值。
 
 训练仅生成融合向量 `trained_item.featCLS`；相似度检索在需要时独立运行，并读取该训练产物：
 
 ```bash
 bash scripts/query_similar.sh ITEM_ID 10
-bash scripts/export_similarities.sh 10
+bash scripts/export_similarities.sh 10 512
 ```
+
+`query_similar.sh` 保持 `ITEM_ID [TOPK]` 用法，省略 `TOPK` 时默认为 `10`。
+`export_similarities.sh` 的位置参数为 `[TOPK [BLOCK_SIZE]]`，默认值分别为 `10` 和
+`512`；省略任一参数时使用其默认值。
 
 也可以按“拉取数据 → 生成文本向量 → 训练融合向量”的顺序运行完整流水线；流水线在训练完成后停止：
 
