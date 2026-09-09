@@ -1,8 +1,9 @@
-torch
-pandas
-numpy
-transformers
-gensim
-scikit-learn
-odps
-pytest
+torch==2.14.0
+pandas==2.3.3
+numpy==2.2.6
+transformers==5.16.1
+gensim==4.4.0
+scikit-learn==1.7.2
+odps==4.0.0
+pytest==9.1.1
+tqdm==4.70.0
