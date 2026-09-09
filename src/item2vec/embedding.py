@@ -2,6 +2,8 @@ import argparse
 import os
 import random
 
+from tqdm import tqdm
+
 from item2vec.io import load_item_index, load_plm, write_item_indexes
 
 
@@ -23,8 +25,10 @@ def generate_item_embedding(word_drop_ratio, emb_type, device, output_path, item
     for text in order_texts:
         assert text != [0]
     embeddings = []
-    start, batch_size = 0, 4
-    while start < len(order_texts):
+    batch_size = 4
+    for start in tqdm(range(0, len(order_texts), batch_size),
+                      total=(len(order_texts) + batch_size - 1) // batch_size,
+                      desc='生成商品向量', unit='批'):
         sentences = order_texts[start: start + batch_size]
         if word_drop_ratio > 0:
             new_sentences = []
@@ -48,14 +52,12 @@ def generate_item_embedding(word_drop_ratio, emb_type, device, output_path, item
             mean_output = masked_output[:, 1:, :].sum(dim=1) / \
                           encoded_sentences['attention_mask'][:, 1:].sum(dim=-1, keepdim=True)
             embeddings.append(mean_output.detach().cpu())
-        start += batch_size
     embeddings = torch.cat(embeddings, dim=0).numpy()
-    print('Embeddings shape: ', embeddings.shape, '\n')
 
     suffix = '2' if word_drop_ratio > 0 else '1'
     file = os.path.join(output_path, 'item' + '.feat' + suffix + emb_type)
     embeddings.tofile(file)
-    print("item embedding completed")
+    print(f"商品向量生成完成：共 {len(items)} 个商品，已保存至 {file}")
 
 
 def main():
