@@ -18,6 +18,45 @@ def build_basket_indexes(baskets, item2index):
     return basket_indexes
 
 
+def prepare_order_baskets(dataframe, item2index, max_basket_size=30):
+    required_columns = ('order_id', 'prod_id', 'dt')
+    missing_columns = [column for column in required_columns if column not in dataframe.columns]
+    if missing_columns:
+        raise ValueError(f'Missing required columns: {", ".join(missing_columns)}')
+    if dataframe.empty:
+        raise ValueError('Input dataframe must not be empty')
+    null_columns = [column for column in required_columns if dataframe[column].isna().any()]
+    if null_columns:
+        raise ValueError(f'Required fields must not contain nulls: {", ".join(null_columns)}')
+    if (isinstance(max_basket_size, bool)
+            or not isinstance(max_basket_size, (int, np.integer))
+            or max_basket_size < 2):
+        raise ValueError('max_basket_size must be at least 2')
+
+    grouped = dataframe.groupby('order_id', sort=False)
+    basket_indexes = []
+    order_counts = np.zeros(len(item2index), dtype=np.int64)
+    large_baskets = 0
+    for _, order in tqdm(grouped, desc='构建训练购物篮', unit='单', total=grouped.ngroups):
+        indexes = {
+            int(item2index[product])
+            for product in order['prod_id']
+            if product in item2index
+        }
+        for index in indexes:
+            order_counts[index] += 1
+        if len(indexes) > max_basket_size:
+            large_baskets += 1
+        elif len(indexes) >= 2:
+            basket_indexes.append([str(index) for index in sorted(indexes)])
+
+    return basket_indexes, order_counts, {
+        'orders': grouped.ngroups,
+        'valid_baskets': len(basket_indexes),
+        'large_baskets': large_baskets,
+    }
+
+
 def train_item2vec(
     item2Index,
     baskets,

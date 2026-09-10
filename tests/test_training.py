@@ -3,18 +3,83 @@ import sys
 import types
 
 import numpy as np
+import pandas as pd
+import pytest
 
 from item2vec import training
-from item2vec.training import build_basket_indexes, write_behavior_embedding
+from item2vec.training import write_behavior_embedding
 
 
-def test_build_basket_indexes_drops_unknown_and_invalid_lengths():
-    baskets = [["A", "missing", "B"], ["A"], list("ABCDEFGHIJKLMNOPQRSTU")]
-    item2index = {code: index for index, code in enumerate("ABCDEFGHIJKLMNOPQRSTU")}
-    assert build_basket_indexes(baskets, item2index) == [["0", "1"]]
+def test_prepare_order_baskets_groups_orders_deduplicates_and_canonicalizes_indexes():
+    item2index = {"A": 2, "B": 0, "C": 1}
+    dataframe = pd.DataFrame(
+        [
+            ("order-2", "C", "20260910"),
+            ("order-2", "missing", "20260910"),
+            ("order-2", "A", "20260910"),
+            ("order-2", "C", "20260910"),
+            ("order-1", "A", "20260909"),
+            ("order-1", "B", "20260909"),
+        ],
+        columns=["order_id", "prod_id", "dt"],
+    )
+    reordered = dataframe.iloc[[2, 0, 3, 1, 5, 4]]
+
+    basket_indexes, order_counts, stats = training.prepare_order_baskets(dataframe, item2index)
+    reordered_baskets, reordered_counts, reordered_stats = training.prepare_order_baskets(
+        reordered, item2index
+    )
+
+    assert basket_indexes == [["1", "2"], ["0", "2"]]
+    np.testing.assert_array_equal(order_counts, [1, 1, 2])
+    assert stats == {"orders": 2, "valid_baskets": 2, "large_baskets": 0}
+    assert reordered_baskets == basket_indexes
+    np.testing.assert_array_equal(reordered_counts, order_counts)
+    assert reordered_stats == stats
 
 
-def test_build_basket_indexes_shows_chinese_progress(monkeypatch):
+def test_prepare_order_baskets_counts_large_and_single_item_orders_without_retaining_them():
+    item2index = {f"P{index}": index for index in range(31)}
+    dataframe = pd.DataFrame(
+        [("large", product, "20260910") for product in item2index]
+        + [("single", "P0", "20260910")],
+        columns=["order_id", "prod_id", "dt"],
+    )
+
+    basket_indexes, order_counts, stats = training.prepare_order_baskets(dataframe, item2index)
+
+    assert basket_indexes == []
+    np.testing.assert_array_equal(order_counts, [2] + [1] * 30)
+    assert stats == {"orders": 2, "valid_baskets": 0, "large_baskets": 1}
+
+
+def test_prepare_order_baskets_requires_order_level_columns():
+    dataframe = pd.DataFrame({"prod_id": ["A"]})
+
+    with pytest.raises(ValueError, match="order_id.*dt"):
+        training.prepare_order_baskets(dataframe, {"A": 0})
+
+
+def test_prepare_order_baskets_rejects_empty_and_null_required_fields():
+    with pytest.raises(ValueError, match="must not be empty"):
+        training.prepare_order_baskets(
+            pd.DataFrame(columns=["order_id", "prod_id", "dt"]), {"A": 0}
+        )
+    with pytest.raises(ValueError, match="must not contain nulls"):
+        training.prepare_order_baskets(
+            pd.DataFrame({"order_id": ["one"], "prod_id": [None], "dt": ["20260910"]}),
+            {"A": 0},
+        )
+
+
+def test_prepare_order_baskets_requires_a_two_item_minimum_basket_size():
+    dataframe = pd.DataFrame({"order_id": ["one"], "prod_id": ["A"], "dt": ["20260910"]})
+
+    with pytest.raises(ValueError, match="max_basket_size must be at least 2"):
+        training.prepare_order_baskets(dataframe, {"A": 0}, max_basket_size=1)
+
+
+def test_prepare_order_baskets_shows_chinese_progress(monkeypatch):
     captured = {}
 
     def fake_tqdm(iterable, **kwargs):
@@ -22,14 +87,15 @@ def test_build_basket_indexes_shows_chinese_progress(monkeypatch):
         captured["kwargs"] = kwargs
         return iterable
 
-    baskets = [["A", "B"]]
     monkeypatch.setattr(training, "tqdm", fake_tqdm)
+    dataframe = pd.DataFrame(
+        {"order_id": ["one", "one", "two", "two"], "prod_id": ["A", "B", "A", "B"],
+         "dt": ["20260910"] * 4}
+    )
 
-    assert build_basket_indexes(baskets, {"A": 0, "B": 1}) == [["0", "1"]]
-    assert captured == {
-        "iterable": baskets,
-        "kwargs": {"desc": "构建训练购物篮", "unit": "个", "total": 1},
-    }
+    training.prepare_order_baskets(dataframe, {"A": 0, "B": 1})
+
+    assert captured["kwargs"] == {"desc": "构建训练购物篮", "unit": "单", "total": 2}
 
 
 def test_write_behavior_embedding_writes_float32_vectors_and_item_ids(tmp_path):

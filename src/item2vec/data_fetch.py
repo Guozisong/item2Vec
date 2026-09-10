@@ -13,7 +13,11 @@ where prod_id in (
 group by prod_id, prod_description;
 '''
 
-ORDER_ITEM_SQL = 'select user_id, prod_id, dt from unisrec_raw_data;'
+ORDER_ITEM_SQL = '''
+select order_id, user_id, prod_id, dt
+from unisrec_raw_data
+where dt >= to_char(dateadd(getdate(), -29, 'dd'), 'yyyymmdd');
+'''
 
 
 def fetch_data(output_dir, access_id, access_key):
