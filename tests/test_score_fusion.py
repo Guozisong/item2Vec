@@ -41,9 +41,8 @@ def test_fusion_rejects_invalid_weight(weight):
                              behavior_vectors=np.eye(2), text_weight=weight)
 
 
-def test_no_eligible_behavior_produces_explicit_zero_vectors():
-    vectors, model = training.train_item2vec(
-        {'A': 0, 'B': 1}, [['A', 'B']], vector_size=4,
-    )
-    assert model is None
-    np.testing.assert_array_equal(vectors, np.zeros((2, 4), dtype=np.float32))
+def test_no_eligible_behavior_stops_training():
+    with pytest.raises(RuntimeError, match='行为共现数据不足'):
+        training.train_item2vec(
+            {'A': 0, 'B': 1}, [['0', '1']], np.array([1, 1]), vector_size=4,
+        )
