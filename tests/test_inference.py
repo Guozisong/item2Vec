@@ -16,6 +16,7 @@ def _write_artifacts(path, item_ids, vectors=None):
         path / "behavior_item.npz",
         vectors=np.zeros((len(item_ids), 3), dtype=np.float32),
         item_ids=np.asarray([str(item_id) for item_id in item_ids]),
+        order_counts=np.arange(len(item_ids), dtype=np.int64),
     )
     (path / "index2item.json").write_text(
         json.dumps({str(index): item_id for index, item_id in enumerate(item_ids)}),
@@ -139,11 +140,12 @@ def test_load_trained_artifacts_reads_vectors_and_mapping(tmp_path):
     vectors[1, 1] = 1.0
     _write_artifacts(tmp_path, ["A", "B"], vectors)
 
-    actual_vectors, actual_mapping, behavior_vectors = inference.load_trained_artifacts(tmp_path)
+    actual_vectors, actual_mapping, behavior_vectors, order_counts = inference.load_trained_artifacts(tmp_path)
 
     np.testing.assert_array_equal(actual_vectors, vectors)
     assert actual_mapping == {"0": "A", "1": "B"}
     assert behavior_vectors.shape == (2, 3)
+    np.testing.assert_array_equal(order_counts, [0, 1])
 
 
 @pytest.mark.parametrize("missing_name", ["item.feat1CLS", "index2item.json", "behavior_item.npz"])
@@ -269,12 +271,14 @@ def test_main_forwards_export_block_size(
 ):
     captured = {}
 
-    def fake_export_all(downstream_dir, top_k, block_size, text_weight):
+    def fake_export_all(downstream_dir, top_k, block_size, text_weight, recall_mode, full_confidence_orders):
         captured.update(
             downstream_dir=downstream_dir,
             top_k=top_k,
             block_size=block_size,
             text_weight=text_weight,
+            recall_mode=recall_mode,
+            full_confidence_orders=full_confidence_orders,
         )
 
     monkeypatch.setattr(inference, "export_all", fake_export_all)
@@ -285,5 +289,52 @@ def test_main_forwards_export_block_size(
         "downstream_dir": "dataset/downstream",
         "top_k": expected_top_k,
         "block_size": expected_block_size,
-        "text_weight": 0.7,
+        "text_weight": None,
+        "recall_mode": "hybrid",
+        "full_confidence_orders": 50,
     }
+
+
+@pytest.mark.parametrize('counts', [None, [1], [-1, 1], [1.5, 2], [np.nan, 1], [np.inf, 1], [[1], [2]], [True, False], ['1', '2']])
+def test_load_trained_artifacts_rejects_missing_or_invalid_order_counts(tmp_path, counts):
+    _write_artifacts(tmp_path, ['A', 'B'])
+    fields = dict(vectors=np.eye(2), item_ids=np.array(['A', 'B']))
+    if counts is not None:
+        fields['order_counts'] = np.asarray(counts)
+    np.savez(tmp_path / 'behavior_item.npz', **fields)
+    with pytest.raises(ValueError, match='order_counts.*train.sh'):
+        inference.load_trained_artifacts(tmp_path)
+
+
+@pytest.mark.parametrize('command', ['query', 'export'])
+@pytest.mark.parametrize('options,expected', [
+    ([], {'recall_mode': 'hybrid', 'text_weight': None, 'full_confidence_orders': 50}),
+    (['--recall-mode', 'complement', '--text-weight', '.3', '--full-confidence-orders', '100'],
+     {'recall_mode': 'complement', 'text_weight': .3, 'full_confidence_orders': 100}),
+])
+def test_main_forwards_recall_options(monkeypatch, command, options, expected):
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(inference, 'query_item' if command == 'query' else 'export_all', capture)
+    argv = [command, 'dataset/downstream'] + (['A'] if command == 'query' else []) + options
+    inference.main(argv)
+    assert {key: captured[key] for key in expected} == expected
+
+
+@pytest.mark.parametrize('command', ['query', 'export'])
+@pytest.mark.parametrize('mode,weight,expected', [('similar', None, .985), ('complement', None, .92), ('hybrid', None, .96), ('similar', .3, .93)])
+def test_query_and_export_apply_recall_mode_and_confidence(tmp_path, command, mode, weight, expected):
+    text = np.zeros((2, 768), dtype=np.float32)
+    text[:, 0] = 1.
+    _write_artifacts(tmp_path, ['A', 'B'], text)
+    np.savez(tmp_path / 'behavior_item.npz', vectors=np.eye(2),
+             item_ids=np.array(['A', 'B']), order_counts=np.array([100, 10]))
+    kwargs = dict(top_k=1, recall_mode=mode, text_weight=weight, full_confidence_orders=100)
+    if command == 'query':
+        path = inference.query_item(tmp_path, 'A', **kwargs)
+    else:
+        path = inference.export_all(tmp_path, **kwargs)
+    np.testing.assert_allclose(pd.read_csv(path).similarity, expected)
