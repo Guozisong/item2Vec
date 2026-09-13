@@ -186,7 +186,9 @@ def main(argv=None):
             or len({str(item) for item in index2item.values()}) != len(index2item)
             or item2index != {str(item): int(i) for i, item in index2item.items()}):
         raise ValueError('商品索引不一致，请重新生成商品索引。')
-    dataframe = pd.read_csv(os.path.join(args.raw_data_dir, 'order_item.csv'), dtype={'prod_id': str})
+    dataframe = pd.read_csv(
+        os.path.join(args.raw_data_dir, 'order_item.csv'), dtype={'order_id': str, 'prod_id': str}
+    )
     basket_indexes, order_counts, stats = prepare_order_baskets(
         dataframe, item2index, max_basket_size=args.max_basket_size
     )

@@ -354,6 +354,30 @@ def test_main_trains_behavior_only_and_preserves_string_product_ids(monkeypatch,
     assert not (tmp_path / "trained_item.featCLS").exists()
 
 
+def test_main_preserves_distinct_string_order_ids(monkeypatch, tmp_path, capsys):
+    (tmp_path / "order_item.csv").write_text(
+        "order_id,dt,prod_id\n001,d1,A\n1,d1,B\n", encoding="utf-8"
+    )
+    (tmp_path / "item2index.json").write_text(json.dumps({"A": 0, "B": 1}))
+    (tmp_path / "index2item.json").write_text(json.dumps({"0": "A", "1": "B"}))
+    captured = {}
+    train_item2vec = training.train_item2vec
+
+    def capture_training(item2index, baskets, order_counts, **kwargs):
+        captured.update(baskets=baskets, order_counts=order_counts)
+        return train_item2vec(item2index, baskets, order_counts, **kwargs)
+
+    monkeypatch.setattr(training, "train_item2vec", capture_training)
+
+    with pytest.raises(RuntimeError, match="行为共现数据不足"):
+        training.main([str(tmp_path), str(tmp_path)])
+
+    assert captured["baskets"] == []
+    np.testing.assert_array_equal(captured["order_counts"], [1, 1])
+    assert "已读取 2 条行为，包含 2 个订单。" in capsys.readouterr().out
+    assert not (tmp_path / "behavior_item.npz").exists()
+
+
 @pytest.mark.parametrize(
     "csv,exception,message",
     [
