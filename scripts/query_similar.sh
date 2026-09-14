@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 1 || $# -gt 4 ]]; then
+numeric_weight_pattern='^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$'
+if [[ $# -lt 1 || $# -gt 4 || ( $# -eq 4 && ${3:-} =~ ${numeric_weight_pattern} ) ]]; then
     echo "Usage: $0 ITEM_ID [TOPK [RECALL_MODE [TEXT_WEIGHT]]]" >&2
     exit 2
 fi
@@ -22,11 +23,17 @@ if [[ ! -f "${downstream_dir}/index2item.json" ]]; then
     exit 1
 fi
 
+recall_mode="${3:-${RECALL_MODE:-hybrid}}"
+text_weight="${4:-${TEXT_WEIGHT:-}}"
+if [[ ${3:-} =~ ${numeric_weight_pattern} ]]; then
+    recall_mode="${RECALL_MODE:-hybrid}"
+    text_weight="$3"
+fi
+
 args=(query "${downstream_dir}" "$1"
     --top-k "${2:-10}"
-    --recall-mode "${3:-${RECALL_MODE:-hybrid}}"
+    --recall-mode "${recall_mode}"
     --full-confidence-orders "${FULL_CONFIDENCE_ORDERS:-50}")
-text_weight="${4:-${TEXT_WEIGHT:-}}"
 if [[ -n "${text_weight}" ]]; then
     args+=(--text-weight "${text_weight}")
 fi
