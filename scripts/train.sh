@@ -7,19 +7,19 @@ raw_data_dir="${repository_root}/dataset/raw"
 downstream_dir="${repository_root}/dataset/downstream"
 
 usage() {
-    echo "Usage: $0 [VECTOR_SIZE WINDOW NEGATIVE EPOCHS]" >&2
+    echo "Usage: $0 [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS]" >&2
 }
 
 case "$#" in
     0)
         vector_size=128
-        window=20
+        max_basket_size=30
         negative=15
         epochs=10
         ;;
     4)
         vector_size="$1"
-        window="$2"
+        max_basket_size="$2"
         negative="$3"
         epochs="$4"
         ;;
@@ -42,6 +42,7 @@ fi
 cd "${repository_root}"
 python -m item2vec.training "${raw_data_dir}" "${downstream_dir}" \
     --vector-size "${vector_size}" \
-    --window "${window}" \
+    --max-basket-size "${max_basket_size}" \
     --negative "${negative}" \
-    --epochs "${epochs}"
+    --epochs "${epochs}" \
+    --min-order-count "${MIN_ORDER_COUNT:-5}"

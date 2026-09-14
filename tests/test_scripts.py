@@ -101,7 +101,7 @@ def test_data_fetch_main_rejects_missing_project_before_fetch(monkeypatch):
         data_fetch.main()
 
 
-def _run_inference_script_with_stub(tmp_path, script_name, arguments):
+def _run_inference_script_with_stub(tmp_path, script_name, arguments, environment=None):
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
     script = scripts_dir / script_name
@@ -128,14 +128,23 @@ def _run_inference_script_with_stub(tmp_path, script_name, arguments):
         [str(script), *arguments],
         text=True,
         capture_output=True,
-        env={**os.environ, "INFERENCE_ARGS_LOG": str(log)},
+        env={
+            **{key: value for key, value in os.environ.items()
+               if key not in {"RECALL_MODE", "FULL_CONFIDENCE_ORDERS", "TEXT_WEIGHT"}},
+            "INFERENCE_ARGS_LOG": str(log),
+            **(environment or {}),
+        },
     )
     return result, log.read_text().splitlines() if log.exists() else []
 
 
-def test_query_script_forwards_item_id_and_top_k(tmp_path):
+@pytest.mark.parametrize(
+    ("arguments", "expected_top_k"),
+    [(["A/../B"], "10"), (["A/../B", "7"], "7")],
+)
+def test_query_script_forwards_item_id_and_top_k(tmp_path, arguments, expected_top_k):
     result, arguments = _run_inference_script_with_stub(
-        tmp_path, "query_similar.sh", ["A/../B", "7"]
+        tmp_path, "query_similar.sh", arguments
     )
 
     assert result.returncode == 0
@@ -144,15 +153,17 @@ def test_query_script_forwards_item_id_and_top_k(tmp_path):
         str(tmp_path / "dataset" / "downstream"),
         "A/../B",
         "--top-k",
-        "7",
-        "--text-weight",
-        "0.7",
+        expected_top_k,
+        "--recall-mode",
+        "hybrid",
+        "--full-confidence-orders",
+        "50",
     ]
 
 
 @pytest.mark.parametrize(
     ("arguments", "expected_top_k", "expected_block_size"),
-    [([], "10", "512"), (["6", "128"], "6", "128")],
+    [([], "10", "512"), (["6"], "6", "512"), (["6", "128"], "6", "128")],
 )
 def test_export_script_forwards_top_k_and_block_size(
     tmp_path, arguments, expected_top_k, expected_block_size
@@ -169,15 +180,62 @@ def test_export_script_forwards_top_k_and_block_size(
         expected_top_k,
         "--block-size",
         expected_block_size,
-        "--text-weight",
-        "0.7",
+        "--recall-mode",
+        "hybrid",
+        "--full-confidence-orders",
+        "50",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("script_name", "base_arguments", "expected_prefix"),
+    [
+        ("query_similar.sh", ["A", "7"], ["A", "--top-k", "7"]),
+        ("export_similarities.sh", ["6", "128"],
+         ["--top-k", "6", "--block-size", "128"]),
+    ],
+)
+@pytest.mark.parametrize(
+    ("extra_arguments", "environment", "expected_options"),
+    [
+        ([], {"RECALL_MODE": "complement", "FULL_CONFIDENCE_ORDERS": "80",
+              "TEXT_WEIGHT": "0.2"},
+         ["--recall-mode", "complement", "--full-confidence-orders", "80",
+          "--text-weight", "0.2"]),
+        (["similar"], {"RECALL_MODE": "complement", "TEXT_WEIGHT": "0.3"},
+         ["--recall-mode", "similar", "--full-confidence-orders", "50",
+          "--text-weight", "0.3"]),
+        (["similar", "0.4"], {"RECALL_MODE": "complement", "TEXT_WEIGHT": "0.2"},
+         ["--recall-mode", "similar", "--full-confidence-orders", "50",
+          "--text-weight", "0.4"]),
+        ([], {"RECALL_MODE": "", "FULL_CONFIDENCE_ORDERS": "", "TEXT_WEIGHT": ""},
+         ["--recall-mode", "hybrid", "--full-confidence-orders", "50"]),
+        (["invalid-mode"], {},
+         ["--recall-mode", "invalid-mode", "--full-confidence-orders", "50"]),
+    ],
+)
+def test_inference_scripts_forward_recall_overrides(
+    tmp_path, script_name, base_arguments, expected_prefix,
+    extra_arguments, environment, expected_options
+):
+    result, forwarded = _run_inference_script_with_stub(
+        tmp_path, script_name, base_arguments + extra_arguments, environment
+    )
+
+    assert result.returncode == 0
+    assert forwarded == [
+        "query" if script_name == "query_similar.sh" else "export",
+        str(tmp_path / "dataset" / "downstream"),
+        *expected_prefix,
+        *expected_options,
     ]
 
 
 @pytest.mark.parametrize(
     ("script_name", "arguments"),
-    [("query_similar.sh", []), ("query_similar.sh", ["A", "2", "0.7", "extra"]),
-     ("export_similarities.sh", ["2", "512", "0.7", "too-many"])],
+    [("query_similar.sh", []),
+     ("query_similar.sh", ["A", "2", "hybrid", "0.7", "extra"]),
+     ("export_similarities.sh", ["2", "512", "hybrid", "0.7", "too-many"])],
 )
 def test_inference_scripts_reject_invalid_argument_counts(tmp_path, script_name, arguments):
     result, forwarded = _run_inference_script_with_stub(tmp_path, script_name, arguments)
@@ -187,7 +245,7 @@ def test_inference_scripts_reject_invalid_argument_counts(tmp_path, script_name,
     assert forwarded == []
 
 
-def _run_train_script_with_stub(tmp_path, arguments):
+def _run_train_script_with_stub(tmp_path, arguments, environment=None):
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
     script = scripts_dir / "train.sh"
@@ -217,7 +275,11 @@ def _run_train_script_with_stub(tmp_path, arguments):
         [str(script), *arguments],
         text=True,
         capture_output=True,
-        env={**os.environ, "TRAINING_ARGS_LOG": str(log)},
+        env={
+            **{key: value for key, value in os.environ.items() if key != "MIN_ORDER_COUNT"},
+            "TRAINING_ARGS_LOG": str(log),
+            **(environment or {}),
+        },
     )
     return result, log.read_text().splitlines() if log.exists() else []
 
@@ -228,17 +290,33 @@ def test_train_script_forwards_default_parameters(tmp_path):
     assert result.returncode == 0
     assert arguments == [
         str(tmp_path / "dataset" / "raw"), str(tmp_path / "dataset" / "downstream"),
-        "--vector-size", "128", "--window", "20", "--negative", "15", "--epochs", "10",
+        "--vector-size", "128", "--max-basket-size", "30", "--negative", "15",
+        "--epochs", "10", "--min-order-count", "5",
     ]
 
 
 def test_train_script_forwards_custom_parameters(tmp_path):
-    result, arguments = _run_train_script_with_stub(tmp_path, ["64", "8", "4", "6"])
+    result, arguments = _run_train_script_with_stub(tmp_path, ["64", "30", "4", "6"])
 
     assert result.returncode == 0
-    assert arguments[-8:] == [
-        "--vector-size", "64", "--window", "8", "--negative", "4", "--epochs", "6",
+    assert arguments == [
+        str(tmp_path / "dataset" / "raw"), str(tmp_path / "dataset" / "downstream"),
+        "--vector-size", "64", "--max-basket-size", "30", "--negative", "4",
+        "--epochs", "6", "--min-order-count", "5",
     ]
+
+
+@pytest.mark.parametrize("arguments", [[], ["64", "30", "4", "6"]])
+@pytest.mark.parametrize(("min_order_count", "expected"), [("9", "9"), ("", "5")])
+def test_train_script_forwards_min_order_count_environment(
+    tmp_path, arguments, min_order_count, expected
+):
+    result, forwarded = _run_train_script_with_stub(
+        tmp_path, arguments, {"MIN_ORDER_COUNT": min_order_count}
+    )
+
+    assert result.returncode == 0
+    assert forwarded[-2:] == ["--min-order-count", expected]
 
 
 @pytest.mark.parametrize("arguments", [["0.7"], ["0.7", "20"], ["0.7", "20", "15"], ["0.7", "20", "15", "10", "extra"]])

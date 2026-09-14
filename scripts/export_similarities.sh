@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -gt 3 ]]; then
-    echo "Usage: $0 [TOPK [BLOCK_SIZE [TEXT_WEIGHT]]]" >&2
+if [[ $# -gt 4 ]]; then
+    echo "Usage: $0 [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]]]]" >&2
     exit 2
 fi
 
@@ -22,8 +22,15 @@ if [[ ! -f "${downstream_dir}/index2item.json" ]]; then
     exit 1
 fi
 
+args=(export "${downstream_dir}"
+    --top-k "${1:-10}"
+    --block-size "${2:-512}"
+    --recall-mode "${3:-${RECALL_MODE:-hybrid}}"
+    --full-confidence-orders "${FULL_CONFIDENCE_ORDERS:-50}")
+text_weight="${4:-${TEXT_WEIGHT:-}}"
+if [[ -n "${text_weight}" ]]; then
+    args+=(--text-weight "${text_weight}")
+fi
+
 cd "${repository_root}"
-python -m item2vec.inference export "${downstream_dir}" \
-    --top-k "${1:-10}" \
-    --block-size "${2:-512}" \
-    --text-weight "${3:-0.7}"
+python -m item2vec.inference "${args[@]}"
