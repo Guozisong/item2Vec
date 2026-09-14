@@ -282,6 +282,35 @@ def test_write_csv_atomic_keeps_existing_file_when_write_fails(monkeypatch, tmp_
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+def test_write_csv_atomic_keeps_existing_file_when_csv_is_empty(monkeypatch, tmp_path):
+    output_path = tmp_path / "output.csv"
+    output_path.write_text("previous\n", encoding="utf-8")
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", lambda *args, **kwargs: None)
+
+    with pytest.raises(OSError, match="non-empty CSV"):
+        inference.write_csv_atomic(pd.DataFrame([("A", "B", 0.2)], columns=COLUMNS), output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "previous\n"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_write_csv_atomic_cleans_temporary_file_on_keyboard_interrupt(monkeypatch, tmp_path):
+    output_path = tmp_path / "output.csv"
+    output_path.write_text("previous\n", encoding="utf-8")
+
+    def interrupt_to_csv(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", interrupt_to_csv)
+
+    with pytest.raises(KeyboardInterrupt):
+        inference.write_csv_atomic(pd.DataFrame([("A", "B", 0.2)], columns=COLUMNS), output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "previous\n"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
 def test_write_csv_atomic_replaces_output_and_returns_path(tmp_path):
     output_path = tmp_path / "output.csv"
 

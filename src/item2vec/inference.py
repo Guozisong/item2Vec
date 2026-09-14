@@ -82,10 +82,9 @@ def write_csv_atomic(dataframe, output_path):
             raise OSError(f'failed to write non-empty CSV: {output_path}')
         os.replace(temp_path, output_path)
         return output_path
-    except Exception:
-        if temp_path is not None:
+    finally:
+        if temp_path is not None and temp_path.exists():
             temp_path.unlink(missing_ok=True)
-        raise
 
 
 def validate_top_k(top_k, item_count):
