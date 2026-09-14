@@ -221,7 +221,7 @@ def test_export_all_writes_all_sources_with_exact_schema(tmp_path):
 
     output_path = inference.export_all(tmp_path, top_k=1, block_size=1)
 
-    assert output_path == tmp_path / "item_cosine_similarity.csv"
+    assert output_path == tmp_path / "item_similarity_hybrid.csv"
     result = pd.read_csv(output_path)
     assert list(result.columns) == COLUMNS
     assert result[["master_prod_id", "slave_prod_id"]].values.tolist() == [
@@ -229,6 +229,69 @@ def test_export_all_writes_all_sources_with_exact_schema(tmp_path):
         ["B", "A"],
         ["C", "B"],
     ]
+
+
+def test_export_all_writes_complement_output_and_forwards_scoring_options(monkeypatch, tmp_path):
+    _write_artifacts(tmp_path, ["A", "B"])
+    captured = {}
+
+    def fake_rank_items(*args, **kwargs):
+        captured.update(kwargs)
+        return pd.DataFrame([("A", "B", 0.2)], columns=COLUMNS)
+
+    monkeypatch.setattr(inference, "rank_items", fake_rank_items)
+
+    output_path = inference.export_all(tmp_path, top_k=1, recall_mode="complement")
+
+    assert output_path == tmp_path / "item_similarity_complement.csv"
+    assert captured["text_weight"] == 0.20
+    assert captured["full_confidence_orders"] == 50
+    assert list(pd.read_csv(output_path).columns) == COLUMNS
+
+
+def test_query_item_keeps_legacy_filename_and_forwards_recall_mode(monkeypatch, tmp_path):
+    _write_artifacts(tmp_path, ["A", "B"])
+    captured = {}
+
+    def fake_rank_items(*args, **kwargs):
+        captured.update(kwargs)
+        return pd.DataFrame([("A", "B", 0.2)], columns=COLUMNS)
+
+    monkeypatch.setattr(inference, "rank_items", fake_rank_items)
+
+    output_path = inference.query_item(tmp_path, "A", top_k=1, recall_mode="complement")
+
+    assert output_path == tmp_path / "query_A.csv"
+    assert captured["text_weight"] == 0.20
+    assert captured["full_confidence_orders"] == 50
+
+
+def test_write_csv_atomic_keeps_existing_file_when_write_fails(monkeypatch, tmp_path):
+    output_path = tmp_path / "output.csv"
+    output_path.write_text("previous\n", encoding="utf-8")
+
+    def fail_to_csv(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", fail_to_csv)
+
+    with pytest.raises(OSError, match="disk full"):
+        inference.write_csv_atomic(pd.DataFrame([("A", "B", 0.2)], columns=COLUMNS), output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "previous\n"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_write_csv_atomic_replaces_output_and_returns_path(tmp_path):
+    output_path = tmp_path / "output.csv"
+
+    actual_path = inference.write_csv_atomic(
+        pd.DataFrame([("A", "B", 0.2)], columns=COLUMNS), output_path
+    )
+
+    assert actual_path == output_path
+    assert output_path.stat().st_size > 0
+    assert list(pd.read_csv(output_path).columns) == COLUMNS
 
 
 def test_export_all_shows_block_progress_and_chinese_status_messages(

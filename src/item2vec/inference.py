@@ -1,5 +1,7 @@
 import argparse
+import os
 import re
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +62,30 @@ def safe_item_filename(item_id):
     if not filename or not filename.strip("."):
         return "item"
     return filename
+
+
+def write_csv_atomic(dataframe, output_path):
+    output_path = Path(output_path)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            dir=output_path.parent,
+            suffix='.tmp',
+            mode='w',
+            encoding='utf-8',
+            newline='',
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+        dataframe.to_csv(temp_path, index=False)
+        if not temp_path.is_file() or temp_path.stat().st_size == 0:
+            raise OSError(f'failed to write non-empty CSV: {output_path}')
+        os.replace(temp_path, output_path)
+        return output_path
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
 
 
 def validate_top_k(top_k, item_count):
@@ -189,7 +215,7 @@ def query_item(downstream_dir, item_id, top_k=10, text_weight=None,
                         behavior_vectors=behavior_vectors, text_weight=text_weight,
                         behavior_order_counts=order_counts, full_confidence_orders=full_confidence_orders)
     output_path = Path(downstream_dir) / f"query_{safe_item_filename(item_id)}.csv"
-    result.to_csv(output_path, index=False)
+    write_csv_atomic(result, output_path)
     print(f"查询完成，共写入 {len(result)} 条结果：{output_path}")
     return output_path
 
@@ -212,8 +238,8 @@ def export_all(downstream_dir, top_k=10, block_size=512, text_weight=None,
         behavior_order_counts=order_counts,
         full_confidence_orders=full_confidence_orders,
     )
-    output_path = Path(downstream_dir) / "item_cosine_similarity.csv"
-    result.to_csv(output_path, index=False)
+    output_path = Path(downstream_dir) / f"item_similarity_{recall_mode}.csv"
+    write_csv_atomic(result, output_path)
     print(f"导出完成，共写入 {len(result)} 条结果：{output_path}")
     return output_path
 
