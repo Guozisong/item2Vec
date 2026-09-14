@@ -128,7 +128,7 @@ def rank_items(
     block_size=512,
     show_progress=False,
     behavior_vectors=None,
-    text_weight=0.7,
+    text_weight=None,
     behavior_order_counts=None,
     full_confidence_orders=50,
 ):
@@ -195,6 +195,8 @@ def rank_items(
 def query_item(downstream_dir, item_id, top_k=10, text_weight=None,
                recall_mode='hybrid', full_confidence_orders=50):
     text_weight = resolve_text_weight(recall_mode, text_weight)
+    print(f"召回模式：{recall_mode}，文本权重：{text_weight:g}，"
+          f"行为权重：{1 - text_weight:g}，满置信订单数：{full_confidence_orders}")
     print("正在加载训练向量与索引…")
     vectors, index2item, behavior_vectors, order_counts = load_trained_artifacts(downstream_dir)
     requested_id = str(item_id)
@@ -222,6 +224,8 @@ def query_item(downstream_dir, item_id, top_k=10, text_weight=None,
 def export_all(downstream_dir, top_k=10, block_size=512, text_weight=None,
                recall_mode='hybrid', full_confidence_orders=50):
     text_weight = resolve_text_weight(recall_mode, text_weight)
+    print(f"召回模式：{recall_mode}，文本权重：{text_weight:g}，"
+          f"行为权重：{1 - text_weight:g}，满置信订单数：{full_confidence_orders}")
     print("正在加载训练向量与索引…")
     vectors, index2item, behavior_vectors, order_counts = load_trained_artifacts(downstream_dir)
     print("正在计算全量商品相似度…")

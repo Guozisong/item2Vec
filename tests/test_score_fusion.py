@@ -5,6 +5,14 @@ import pytest
 from item2vec import inference, training
 
 
+def test_fusion_defaults_to_hybrid_text_weight():
+    result = inference.rank_items(
+        np.array([[1., 0.], [1., 0.]]), {'0': 'A', '1': 'B'}, [0], 1,
+        behavior_vectors=np.eye(2), behavior_order_counts=[50, 50],
+    )
+    assert result.iloc[0].similarity == pytest.approx(.60)
+
+
 @pytest.mark.parametrize('weight,expected', [(1.0, 'B'), (0.0, 'C'), (0.7, 'B')])
 def test_fusion_changes_ranking_with_weight(weight, expected):
     text = np.array([[1., 0.], [.8, .6], [0., 1.]])

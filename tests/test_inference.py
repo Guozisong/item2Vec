@@ -206,6 +206,7 @@ def test_query_item_prints_chinese_status_messages(tmp_path, capsys):
     output_path = inference.query_item(tmp_path, "A", top_k=2)
 
     assert capsys.readouterr().out == (
+        "召回模式：hybrid，文本权重：0.6，行为权重：0.4，满置信订单数：50\n"
         "正在加载训练向量与索引…\n"
         "正在查询商品 A 的 Top-2 相似商品…\n"
         f"查询完成，共写入 2 条结果：{output_path}\n"
@@ -345,6 +346,7 @@ def test_export_all_shows_block_progress_and_chinese_status_messages(
         {"desc": "计算商品相似度", "unit": "块", "total": 3}
     ]
     assert capsys.readouterr().out == (
+        "召回模式：hybrid，文本权重：0.6，行为权重：0.4，满置信订单数：50\n"
         "正在加载训练向量与索引…\n"
         "正在计算全量商品相似度…\n"
         f"导出完成，共写入 3 条结果：{output_path}\n"
@@ -430,3 +432,17 @@ def test_query_and_export_apply_recall_mode_and_confidence(tmp_path, command, mo
     else:
         path = inference.export_all(tmp_path, **kwargs)
     np.testing.assert_allclose(pd.read_csv(path).similarity, expected)
+
+
+@pytest.mark.parametrize('command', ['query', 'export'])
+@pytest.mark.parametrize('weight,expected_weights', [(None, '文本权重：0.2，行为权重：0.8'), (.35, '文本权重：0.35，行为权重：0.65')])
+def test_query_and_export_log_selected_mode_and_resolved_weights(tmp_path, capsys, command, weight, expected_weights):
+    _write_artifacts(tmp_path, ['A', 'B'])
+    kwargs = dict(top_k=1, recall_mode='complement', text_weight=weight, full_confidence_orders=100)
+    if command == 'query':
+        inference.query_item(tmp_path, 'A', **kwargs)
+    else:
+        inference.export_all(tmp_path, **kwargs)
+    assert capsys.readouterr().out.splitlines()[0] == (
+        f'召回模式：complement，{expected_weights}，满置信订单数：100'
+    )
