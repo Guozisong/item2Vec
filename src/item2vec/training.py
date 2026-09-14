@@ -102,7 +102,7 @@ def train_item2vec(
         min_count=1,
         sg=1,
         negative=negative,
-        sample=1e-4,
+        sample=0,
         workers=workers,
         epochs=epochs,
         alpha=0.002,

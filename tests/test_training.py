@@ -268,7 +268,7 @@ def test_train_uses_fixed_full_basket_window_and_configured_parameters(captured_
     assert captured["init"]["negative"] == 4
     assert captured["init"]["epochs"] == 6
     assert captured["init"]["workers"] == 1
-    assert captured["init"]["sample"] == 1e-4
+    assert captured["init"]["sample"] == 0
     assert captured["vocab"] == baskets
     assert captured["train"] == {
         "sentences": baskets, "total_examples": 1, "epochs": 6,
