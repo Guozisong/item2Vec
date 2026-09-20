@@ -8,3 +8,5 @@ dataset/raw/*.csv
 dataset/raw/.env
 dataset/m3e-base/
 dataset/downstream/
+
+outputs/

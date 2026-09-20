@@ -1,3 +1,4 @@
+import argparse
 import os
 
 
@@ -34,13 +35,17 @@ def fetch_data(output_dir, access_id, access_key):
         dataframe.to_csv(os.path.join(output_dir, filename), index=False, encoding='utf-8')
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('output_dir')
+    args = parser.parse_args(argv)
+
     required_names = ('ALI_ACCESS_ID', 'ALI_SECRET_ACCESS_KEY', 'ALI_PROJECT')
     if any(not os.environ.get(name) for name in required_names):
         raise RuntimeError('Missing ODPS credentials')
 
-    output_dir = os.path.join(os.getcwd(), 'dataset', 'raw')
-    fetch_data(output_dir, os.environ['ALI_ACCESS_ID'], os.environ['ALI_SECRET_ACCESS_KEY'])
+    os.makedirs(args.output_dir, exist_ok=True)
+    fetch_data(args.output_dir, os.environ['ALI_ACCESS_ID'], os.environ['ALI_SECRET_ACCESS_KEY'])
 
 
 if __name__ == '__main__':

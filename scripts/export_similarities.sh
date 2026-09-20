@@ -2,24 +2,55 @@
 set -euo pipefail
 
 numeric_weight_pattern='^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$'
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${repository_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
+work_dir="${repository_root}/outputs"
+work_dir_set=
+positionals=()
+
+usage() {
+    echo "Usage: $0 [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]]]] [--work-dir DIR]" >&2
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --work-dir)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* && -z "${work_dir_set}" ]] || { usage; exit 2; }
+            work_dir="$2"
+            work_dir_set=1
+            shift 2
+            ;;
+        --*)
+            usage
+            exit 2
+            ;;
+        *)
+            positionals+=("$1")
+            shift
+            ;;
+    esac
+done
+if [[ ${#positionals[@]} -gt 0 ]]; then
+    set -- "${positionals[@]}"
+else
+    set --
+fi
+
 if [[ $# -gt 4 || ( $# -eq 4 && ${3:-} =~ ${numeric_weight_pattern} ) ]]; then
-    echo "Usage: $0 [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]]]]" >&2
+    usage
     exit 2
 fi
 
-repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PYTHONPATH="${repository_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
-downstream_dir="${repository_root}/dataset/downstream"
-
+embeddings_dir="${work_dir}/embeddings"
+results_dir="${work_dir}/results"
 for artifact in item.feat1CLS behavior_item.npz; do
-    if [[ ! -f "${downstream_dir}/${artifact}" ]]; then
-        echo "Missing artifact: ${downstream_dir}/${artifact}; 请先生成文本向量并运行 bash scripts/train.sh" >&2
+    if [[ ! -f "${embeddings_dir}/${artifact}" ]]; then
+        echo "Missing artifact: ${embeddings_dir}/${artifact}; 请先生成文本向量并运行 bash scripts/train.sh" >&2
         exit 1
     fi
 done
-
-if [[ ! -f "${downstream_dir}/index2item.json" ]]; then
-    echo "Missing item index mapping: ${downstream_dir}/index2item.json" >&2
+if [[ ! -f "${embeddings_dir}/index2item.json" ]]; then
+    echo "Missing item index mapping: ${embeddings_dir}/index2item.json" >&2
     exit 1
 fi
 
@@ -30,7 +61,10 @@ if [[ ${3:-} =~ ${numeric_weight_pattern} ]]; then
     text_weight="$3"
 fi
 
-args=(export "${downstream_dir}"
+mkdir -p "${results_dir}"
+echo "工作目录：${work_dir}"
+args=(export "${embeddings_dir}"
+    --output-dir "${results_dir}"
     --top-k "${1:-10}"
     --block-size "${2:-512}"
     --recall-mode "${recall_mode}"

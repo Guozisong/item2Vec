@@ -193,7 +193,7 @@ def rank_items(
 
 
 def query_item(downstream_dir, item_id, top_k=10, text_weight=None,
-               recall_mode='hybrid', full_confidence_orders=50):
+               recall_mode='hybrid', full_confidence_orders=50, output_dir=None):
     text_weight = resolve_text_weight(recall_mode, text_weight)
     print(f"召回模式：{recall_mode}，文本权重：{text_weight:g}，"
           f"行为权重：{1 - text_weight:g}，满置信订单数：{full_confidence_orders}")
@@ -215,14 +215,16 @@ def query_item(downstream_dir, item_id, top_k=10, text_weight=None,
     result = rank_items(vectors, index2item, [int(source_index)], top_k,
                         behavior_vectors=behavior_vectors, text_weight=text_weight,
                         behavior_order_counts=order_counts, full_confidence_orders=full_confidence_orders)
-    output_path = Path(downstream_dir) / f"query_{safe_item_filename(item_id)}.csv"
+    output_dir = Path(downstream_dir if output_dir is None else output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"query_{safe_item_filename(item_id)}.csv"
     write_csv_atomic(result, output_path)
     print(f"查询完成，共写入 {len(result)} 条结果：{output_path}")
     return output_path
 
 
 def export_all(downstream_dir, top_k=10, block_size=512, text_weight=None,
-               recall_mode='hybrid', full_confidence_orders=50):
+               recall_mode='hybrid', full_confidence_orders=50, output_dir=None):
     text_weight = resolve_text_weight(recall_mode, text_weight)
     print(f"召回模式：{recall_mode}，文本权重：{text_weight:g}，"
           f"行为权重：{1 - text_weight:g}，满置信订单数：{full_confidence_orders}")
@@ -241,7 +243,9 @@ def export_all(downstream_dir, top_k=10, block_size=512, text_weight=None,
         behavior_order_counts=order_counts,
         full_confidence_orders=full_confidence_orders,
     )
-    output_path = Path(downstream_dir) / f"item_similarity_{recall_mode}.csv"
+    output_dir = Path(downstream_dir if output_dir is None else output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"item_similarity_{recall_mode}.csv"
     write_csv_atomic(result, output_path)
     print(f"导出完成，共写入 {len(result)} 条结果：{output_path}")
     return output_path
@@ -258,6 +262,7 @@ def _build_parser():
     query_parser.add_argument('--recall-mode', choices=MODE_TEXT_WEIGHTS, default='hybrid')
     query_parser.add_argument('--text-weight', type=float, default=None)
     query_parser.add_argument('--full-confidence-orders', type=int, default=50)
+    query_parser.add_argument('--output-dir', default=None)
 
     export_parser = subparsers.add_parser("export")
     export_parser.add_argument("downstream_dir")
@@ -266,6 +271,7 @@ def _build_parser():
     export_parser.add_argument('--recall-mode', choices=MODE_TEXT_WEIGHTS, default='hybrid')
     export_parser.add_argument('--text-weight', type=float, default=None)
     export_parser.add_argument('--full-confidence-orders', type=int, default=50)
+    export_parser.add_argument('--output-dir', default=None)
     return parser
 
 
@@ -273,11 +279,12 @@ def main(argv=None):
     args = _build_parser().parse_args(argv)
     if args.command == "query":
         query_item(args.downstream_dir, args.item_id, top_k=args.top_k, text_weight=args.text_weight,
-                   recall_mode=args.recall_mode, full_confidence_orders=args.full_confidence_orders)
+                   recall_mode=args.recall_mode, full_confidence_orders=args.full_confidence_orders,
+                   output_dir=args.output_dir)
     else:
         export_all(args.downstream_dir, top_k=args.top_k, block_size=args.block_size,
                    text_weight=args.text_weight, recall_mode=args.recall_mode,
-                   full_confidence_orders=args.full_confidence_orders)
+                   full_confidence_orders=args.full_confidence_orders, output_dir=args.output_dir)
 
 
 if __name__ == "__main__":

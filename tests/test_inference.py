@@ -365,7 +365,7 @@ def test_main_forwards_export_block_size(
 ):
     captured = {}
 
-    def fake_export_all(downstream_dir, top_k, block_size, text_weight, recall_mode, full_confidence_orders):
+    def fake_export_all(downstream_dir, top_k, block_size, text_weight, recall_mode, full_confidence_orders, output_dir):
         captured.update(
             downstream_dir=downstream_dir,
             top_k=top_k,
@@ -373,6 +373,7 @@ def test_main_forwards_export_block_size(
             text_weight=text_weight,
             recall_mode=recall_mode,
             full_confidence_orders=full_confidence_orders,
+            output_dir=output_dir,
         )
 
     monkeypatch.setattr(inference, "export_all", fake_export_all)
@@ -386,6 +387,7 @@ def test_main_forwards_export_block_size(
         "text_weight": None,
         "recall_mode": "hybrid",
         "full_confidence_orders": 50,
+        "output_dir": None,
     }
 
 
@@ -446,3 +448,31 @@ def test_query_and_export_log_selected_mode_and_resolved_weights(tmp_path, capsy
     assert capsys.readouterr().out.splitlines()[0] == (
         f'召回模式：complement，{expected_weights}，满置信订单数：100'
     )
+
+
+def test_query_item_writes_to_separate_output_directory(tmp_path):
+    artifact_dir = tmp_path / "embeddings"
+    artifact_dir.mkdir()
+    output_dir = tmp_path / "results"
+    _write_artifacts(artifact_dir, ["A", "B"])
+
+    output_path = inference.query_item(
+        artifact_dir, "A", top_k=1, output_dir=output_dir
+    )
+
+    assert output_path == output_dir / "query_A.csv"
+    assert output_path.is_file()
+
+
+def test_export_all_writes_to_separate_output_directory(tmp_path):
+    artifact_dir = tmp_path / "embeddings"
+    artifact_dir.mkdir()
+    output_dir = tmp_path / "results"
+    _write_artifacts(artifact_dir, ["A", "B"])
+
+    output_path = inference.export_all(
+        artifact_dir, top_k=1, output_dir=output_dir
+    )
+
+    assert output_path == output_dir / "item_similarity_hybrid.csv"
+    assert output_path.is_file()

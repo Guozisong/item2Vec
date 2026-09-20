@@ -57,6 +57,7 @@ def test_run_pipeline_stops_after_failed_middle_stage(tmp_path):
 def test_gitignore_excludes_local_model_assets():
     ignored_paths = (REPOSITORY_ROOT / ".gitignore").read_text().splitlines()
     assert "dataset/m3e-base/" in ignored_paths
+    assert "outputs/" in ignored_paths
 
 
 def test_generate_embeddings_rejects_missing_item_csv(tmp_path):
@@ -91,14 +92,14 @@ def test_fetch_data_uses_default_endpoint_when_environment_value_is_blank(monkey
     assert captured['endpoint'] == data_fetch.DEFAULT_ENDPOINT
 
 
-def test_data_fetch_main_rejects_missing_project_before_fetch(monkeypatch):
+def test_data_fetch_main_rejects_missing_project_before_fetch(monkeypatch, tmp_path):
     monkeypatch.setenv('ALI_ACCESS_ID', 'id')
     monkeypatch.setenv('ALI_SECRET_ACCESS_KEY', 'key')
     monkeypatch.delenv('ALI_PROJECT', raising=False)
     monkeypatch.setattr(data_fetch, 'fetch_data', lambda *args: pytest.fail('fetch must not run'))
 
     with pytest.raises(RuntimeError, match='Missing ODPS credentials'):
-        data_fetch.main()
+        data_fetch.main([str(tmp_path)])
 
 
 def _run_inference_script_with_stub(tmp_path, script_name, arguments, environment=None):
@@ -117,7 +118,7 @@ def _run_inference_script_with_stub(tmp_path, script_name, arguments, environmen
         "from pathlib import Path\n"
         "Path(os.environ['INFERENCE_ARGS_LOG']).write_text('\\n'.join(sys.argv[1:]))\n"
     )
-    downstream_dir = tmp_path / "dataset" / "downstream"
+    downstream_dir = tmp_path / "outputs" / "embeddings"
     downstream_dir.mkdir(parents=True)
     (downstream_dir / "item.feat1CLS").write_bytes(b"vectors")
     (downstream_dir / "behavior_item.npz").write_bytes(b"vectors")
@@ -150,8 +151,10 @@ def test_query_script_forwards_item_id_and_top_k(tmp_path, arguments, expected_t
     assert result.returncode == 0
     assert arguments == [
         "query",
-        str(tmp_path / "dataset" / "downstream"),
+        str(tmp_path / "outputs" / "embeddings"),
         "A/../B",
+        "--output-dir",
+        str(tmp_path / "outputs" / "results"),
         "--top-k",
         expected_top_k,
         "--recall-mode",
@@ -175,7 +178,9 @@ def test_export_script_forwards_top_k_and_block_size(
     assert result.returncode == 0
     assert arguments == [
         "export",
-        str(tmp_path / "dataset" / "downstream"),
+        str(tmp_path / "outputs" / "embeddings"),
+        "--output-dir",
+        str(tmp_path / "outputs" / "results"),
         "--top-k",
         expected_top_k,
         "--block-size",
@@ -241,10 +246,16 @@ def test_inference_scripts_forward_recall_overrides(
     )
 
     assert result.returncode == 0
+    command = "query" if script_name == "query_similar.sh" else "export"
+    if command == "query":
+        prefix = [expected_prefix[0], "--output-dir", str(tmp_path / "outputs" / "results"),
+                  *expected_prefix[1:]]
+    else:
+        prefix = ["--output-dir", str(tmp_path / "outputs" / "results"), *expected_prefix]
     assert forwarded == [
-        "query" if script_name == "query_similar.sh" else "export",
-        str(tmp_path / "dataset" / "downstream"),
-        *expected_prefix,
+        command,
+        str(tmp_path / "outputs" / "embeddings"),
+        *prefix,
         *expected_options,
     ]
 
@@ -281,10 +292,10 @@ def _run_train_script_with_stub(tmp_path, arguments, environment=None):
         "from pathlib import Path\n"
         "Path(os.environ['TRAINING_ARGS_LOG']).write_text('\\n'.join(sys.argv[1:]))\n"
     )
-    raw_dir = tmp_path / "dataset" / "raw"
+    raw_dir = tmp_path / "outputs" / "raw"
     raw_dir.mkdir(parents=True)
     (raw_dir / "order_item.csv").write_text("user_id,dt,prod_id\n")
-    downstream_dir = tmp_path / "dataset" / "downstream"
+    downstream_dir = tmp_path / "outputs" / "embeddings"
     downstream_dir.mkdir(parents=True)
     (downstream_dir / "item.feat1CLS").write_bytes(b"vectors")
     (downstream_dir / "item2index.json").write_text("{}")
@@ -309,7 +320,7 @@ def test_train_script_forwards_default_parameters(tmp_path):
 
     assert result.returncode == 0
     assert arguments == [
-        str(tmp_path / "dataset" / "raw"), str(tmp_path / "dataset" / "downstream"),
+        str(tmp_path / "outputs" / "raw"), str(tmp_path / "outputs" / "embeddings"),
         "--vector-size", "128", "--max-basket-size", "30", "--negative", "15",
         "--epochs", "10", "--min-order-count", "5",
     ]
@@ -320,7 +331,7 @@ def test_train_script_forwards_custom_parameters(tmp_path):
 
     assert result.returncode == 0
     assert arguments == [
-        str(tmp_path / "dataset" / "raw"), str(tmp_path / "dataset" / "downstream"),
+        str(tmp_path / "outputs" / "raw"), str(tmp_path / "outputs" / "embeddings"),
         "--vector-size", "64", "--max-basket-size", "30", "--negative", "4",
         "--epochs", "6", "--min-order-count", "5",
     ]
@@ -346,3 +357,249 @@ def test_train_script_rejects_partial_or_extra_parameter_sets(tmp_path, argument
     assert result.returncode != 0
     assert "Usage:" in result.stderr
     assert forwarded == []
+
+
+@pytest.mark.parametrize("script_name", ["query_similar.sh", "export_similarities.sh"])
+def test_inference_scripts_use_custom_work_dir_before_positionals(tmp_path, script_name):
+    custom = tmp_path / "custom"
+    embeddings = custom / "embeddings"
+    embeddings.mkdir(parents=True)
+    (embeddings / "item.feat1CLS").write_bytes(b"vectors")
+    (embeddings / "behavior_item.npz").write_bytes(b"vectors")
+    (embeddings / "index2item.json").write_text("{}")
+    arguments = ["--work-dir", str(custom)]
+    arguments += ["A", "7"] if script_name == "query_similar.sh" else ["6", "128"]
+
+    result, forwarded = _run_inference_script_with_stub(
+        tmp_path, script_name, arguments
+    )
+
+    assert result.returncode == 0
+    assert forwarded[1] == str(custom / "embeddings")
+    output_index = forwarded.index("--output-dir")
+    assert forwarded[output_index + 1] == str(custom / "results")
+
+
+@pytest.mark.parametrize("script_name", ["query_similar.sh", "export_similarities.sh"])
+def test_inference_scripts_use_custom_work_dir_after_positionals(tmp_path, script_name):
+    custom = tmp_path / "custom"
+    embeddings = custom / "embeddings"
+    embeddings.mkdir(parents=True)
+    (embeddings / "item.feat1CLS").write_bytes(b"vectors")
+    (embeddings / "behavior_item.npz").write_bytes(b"vectors")
+    (embeddings / "index2item.json").write_text("{}")
+    arguments = (["A", "7"] if script_name == "query_similar.sh" else ["6", "128"])
+    arguments += ["--work-dir", str(custom)]
+
+    result, forwarded = _run_inference_script_with_stub(
+        tmp_path, script_name, arguments
+    )
+
+    assert result.returncode == 0
+    assert forwarded[1] == str(custom / "embeddings")
+    output_index = forwarded.index("--output-dir")
+    assert forwarded[output_index + 1] == str(custom / "results")
+
+
+def test_train_script_uses_custom_work_dir_after_positionals(tmp_path):
+    custom = tmp_path / "custom"
+    raw_dir = custom / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "order_item.csv").write_text("order_id,user_id,prod_id,dt\n")
+    embeddings = custom / "embeddings"
+    embeddings.mkdir()
+    (embeddings / "item2index.json").write_text("{}")
+    (embeddings / "index2item.json").write_text("{}")
+
+    result, forwarded = _run_train_script_with_stub(
+        tmp_path, ["64", "30", "4", "6", "--work-dir", str(custom)]
+    )
+
+    assert result.returncode == 0
+    assert forwarded[:2] == [str(raw_dir), str(embeddings)]
+
+
+@pytest.mark.parametrize(
+    ("script_name", "arguments"),
+    [
+        ("query_similar.sh", ["A", "--unknown"]),
+        ("query_similar.sh", ["A", "--work-dir"]),
+        ("query_similar.sh", ["A", "--work-dir", "one", "--work-dir", "two"]),
+        ("export_similarities.sh", ["--unknown"]),
+        ("train.sh", ["--work-dir"]),
+    ],
+)
+def test_stage_scripts_reject_invalid_options(tmp_path, script_name, arguments):
+    if script_name == "train.sh":
+        result, forwarded = _run_train_script_with_stub(tmp_path, arguments)
+    else:
+        result, forwarded = _run_inference_script_with_stub(
+            tmp_path, script_name, arguments
+        )
+
+    assert result.returncode != 0
+    assert "Usage:" in result.stderr
+    assert forwarded == []
+
+
+
+def _run_fetch_script_with_stub(tmp_path, arguments):
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir(exist_ok=True)
+    script = scripts_dir / "fetch_data.sh"
+    script.write_text((SCRIPTS / "fetch_data.sh").read_text())
+    script.chmod(0o755)
+    package_dir = tmp_path / "src" / "item2vec"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "data_fetch.py").write_text(
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['FETCH_ARGS_LOG']).write_text('\\n'.join(sys.argv[1:]))\n"
+    )
+    default_env = tmp_path / "dataset" / "raw" / ".env"
+    default_env.parent.mkdir(parents=True, exist_ok=True)
+    default_env.write_text("ALI_ACCESS_ID=id\nALI_SECRET_ACCESS_KEY=key\nALI_PROJECT=project\n")
+    log = tmp_path / "fetch-args.log"
+    result = subprocess.run(
+        [str(script), *arguments], text=True, capture_output=True,
+        env={**os.environ, "FETCH_ARGS_LOG": str(log)},
+    )
+    return result, log.read_text().splitlines() if log.exists() else []
+
+
+def _run_embedding_script_with_stub(tmp_path, arguments):
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir(exist_ok=True)
+    script = scripts_dir / "generate_embeddings.sh"
+    script.write_text((SCRIPTS / "generate_embeddings.sh").read_text())
+    script.chmod(0o755)
+    package_dir = tmp_path / "src" / "item2vec"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "embedding.py").write_text(
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['EMBEDDING_ARGS_LOG']).write_text('\\n'.join(sys.argv[1:]))\n"
+    )
+    item_csv = tmp_path / "outputs" / "raw" / "item.csv"
+    item_csv.parent.mkdir(parents=True)
+    item_csv.write_text("prod_id,prod_description\n")
+    (tmp_path / "dataset" / "m3e-base").mkdir(parents=True)
+    log = tmp_path / "embedding-args.log"
+    result = subprocess.run(
+        [str(script), *arguments], text=True, capture_output=True,
+        env={**os.environ, "EMBEDDING_ARGS_LOG": str(log)},
+    )
+    return result, log.read_text().splitlines() if log.exists() else []
+
+
+def test_fetch_script_uses_custom_work_dir_and_env_file(tmp_path):
+    custom = tmp_path / "pai-output"
+    env_file = tmp_path / "pai.env"
+    env_file.write_text("ALI_ACCESS_ID=id\nALI_SECRET_ACCESS_KEY=key\nALI_PROJECT=project\n")
+
+    result, forwarded = _run_fetch_script_with_stub(
+        tmp_path, ["--work-dir", str(custom), "--env-file", str(env_file)]
+    )
+
+    assert result.returncode == 0
+    assert forwarded == [str(custom / "raw")]
+    assert (custom / "raw").is_dir()
+
+
+def test_embedding_script_uses_custom_work_dir_and_model_dir(tmp_path):
+    custom = tmp_path / "pai-output"
+    item_csv = custom / "raw" / "item.csv"
+    item_csv.parent.mkdir(parents=True)
+    item_csv.write_text("prod_id,prod_description\n")
+    model_dir = tmp_path / "mounted-model"
+    model_dir.mkdir()
+
+    result, forwarded = _run_embedding_script_with_stub(
+        tmp_path, ["--model-dir", str(model_dir), "--work-dir", str(custom)]
+    )
+
+    assert result.returncode == 0
+    assert forwarded == [str(item_csv), str(custom / "embeddings"), str(model_dir)]
+    assert (custom / "embeddings").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("runner", "arguments"),
+    [
+        (_run_fetch_script_with_stub, ["--env-file"]),
+        (_run_fetch_script_with_stub, ["--work-dir", "one", "--work-dir", "two"]),
+        (_run_embedding_script_with_stub, ["--model-dir"]),
+        (_run_embedding_script_with_stub, ["--unknown"]),
+    ],
+)
+def test_fetch_and_embedding_scripts_reject_invalid_options(tmp_path, runner, arguments):
+    result, forwarded = runner(tmp_path, arguments)
+
+    assert result.returncode != 0
+    assert "Usage:" in result.stderr
+    assert forwarded == []
+
+
+def _run_pipeline_with_argument_logging(tmp_path, arguments):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir(exist_ok=True)
+    pipeline = scripts / "run_pipeline.sh"
+    pipeline.write_text((SCRIPTS / "run_pipeline.sh").read_text())
+    for filename, name in [
+        ("fetch_data.sh", "fetch"),
+        ("generate_embeddings.sh", "generate"),
+        ("train.sh", "train"),
+    ]:
+        stage = scripts / filename
+        stage.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '%s' '{name}' >> \"${{PIPELINE_LOG}}\"\n"
+            "printf ' %s' \"$@\" >> \"${PIPELINE_LOG}\"\n"
+            "printf '\\n' >> \"${PIPELINE_LOG}\"\n"
+        )
+        stage.chmod(0o755)
+    log = tmp_path / "pipeline-arguments.log"
+    result = subprocess.run(
+        ["/bin/bash", str(pipeline), *arguments],
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PIPELINE_LOG": str(log)},
+    )
+    return result, log.read_text().splitlines() if log.exists() else []
+
+
+def test_run_pipeline_forwards_shared_and_stage_specific_paths(tmp_path):
+    work_dir = tmp_path / "pai-output"
+    env_file = tmp_path / "pai.env"
+    model_dir = tmp_path / "model"
+
+    result, calls = _run_pipeline_with_argument_logging(
+        tmp_path,
+        ["--work-dir", str(work_dir), "--env-file", str(env_file),
+         "--model-dir", str(model_dir)],
+    )
+
+    assert result.returncode == 0
+    assert calls == [
+        f"fetch --work-dir {work_dir} --env-file {env_file}",
+        f"generate --work-dir {work_dir} --model-dir {model_dir}",
+        f"train --work-dir {work_dir}",
+    ]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--unknown"],
+        ["--work-dir"],
+        ["--env-file", "one", "--env-file", "two"],
+    ],
+)
+def test_run_pipeline_rejects_invalid_options_before_stages(tmp_path, arguments):
+    result, calls = _run_pipeline_with_argument_logging(tmp_path, arguments)
+
+    assert result.returncode != 0
+    assert "Usage:" in result.stderr
+    assert calls == []

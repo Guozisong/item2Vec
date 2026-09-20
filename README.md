@@ -16,9 +16,11 @@ src/item2vec/embedding.py          M3E/BERT 文本向量生成
 src/item2vec/training.py           购物篮构建与 Item2Vec 训练
 src/item2vec/inference.py          文本和行为分数融合与结果导出
 src/item2vec/io.py                 模型、向量和商品索引读写
-dataset/raw/                       环境配置与 ODPS 原始 CSV
-dataset/m3e-base/                  本地预训练文本模型
-dataset/downstream/                商品索引、向量和相似度结果
+dataset/raw/.env                 默认 ODPS 配置文件
+dataset/m3e-base/                  默认本地预训练文本模型
+outputs/raw/                       默认原始数据目录
+outputs/embeddings/                默认商品索引与向量目录
+outputs/results/                   默认推理结果目录
 tests/                             数据、训练、推理和脚本测试
 ```
 
@@ -26,7 +28,7 @@ tests/                             数据、训练、推理和脚本测试
 
 ### 商品数据
 
-`dataset/raw/item.csv` 用于建立统一商品索引并生成文本向量：
+`<work-dir>/raw/item.csv` 用于建立统一商品索引并生成文本向量：
 
 | 字段 | 含义 | 使用方式 |
 | --- | --- | --- |
@@ -37,7 +39,7 @@ tests/                             数据、训练、推理和脚本测试
 
 ### 订单行为数据
 
-`dataset/raw/order_item.csv` 用于训练行为向量：
+`<work-dir>/raw/order_item.csv` 用于训练行为向量：
 
 | 字段 | 含义 | 使用方式 |
 | --- | --- | --- |
@@ -73,30 +75,40 @@ ALI_ENDPOINT=https://your-maxcompute-endpoint/api
 
 前三项必填。`ALI_ENDPOINT` 可选，省略时使用代码中的杭州 VPC 默认地址。凭据、原始 CSV、模型文件和下游产物均为本地运行资产，不应提交到版本库。
 
-流水线使用固定目录：
+所有阶段使用同一个 `--work-dir` 作为产物根目录。省略时默认使用项目内的 `outputs/`：
 
 ```text
-dataset/
+<work-dir>/
 ├── raw/
-│   ├── .env
 │   ├── item.csv
 │   └── order_item.csv
-├── m3e-base/
-└── downstream/
-    ├── item2index.json
-    ├── index2item.json
-    ├── item.feat1CLS
-    ├── behavior_item.npz
+├── embeddings/
+│   ├── item2index.json
+│   ├── index2item.json
+│   ├── item.feat1CLS
+│   └── behavior_item.npz
+└── results/
     ├── query_<ITEM_ID>.csv
     └── item_similarity_<mode>.csv
 ```
+
+ODPS 配置和文本模型属于外部输入，不写入工作目录。可分别通过 `--env-file` 和 `--model-dir` 指向 PAI 的独立挂载目录。
 
 ## 完整流程
 
 执行完整训练流水线：
 
 ```bash
-bash scripts/run_pipeline.sh
+bash scripts/run_pipeline.sh --work-dir "$PAI_OUTPUT_DIR"
+```
+
+如果 ODPS 配置和文本模型也使用挂载目录：
+
+```bash
+bash scripts/run_pipeline.sh \
+  --work-dir "$PAI_OUTPUT_DIR" \
+  --env-file /path/to/mounted/.env \
+  --model-dir /path/to/mounted/m3e-base
 ```
 
 执行顺序固定为：`fetch_data → generate_embeddings → train`。任一阶段失败，脚本会立即停止。完整流水线训练完成后结束，不自动执行相似度查询或批量导出。
@@ -104,13 +116,13 @@ bash scripts/run_pipeline.sh
 训练完成后批量导出每个商品的 Top-20 相似商品：
 
 ```bash
-bash scripts/export_similarities.sh 20 512 hybrid
+bash scripts/export_similarities.sh 20 512 hybrid --work-dir "$PAI_OUTPUT_DIR"
 ```
 
 查询单个商品：
 
 ```bash
-bash scripts/query_similar.sh ITEM_ID 10 hybrid
+bash scripts/query_similar.sh ITEM_ID 10 hybrid --work-dir "$PAI_OUTPUT_DIR"
 ```
 
 ### 使用 nohup 后台执行
@@ -118,31 +130,32 @@ bash scripts/query_similar.sh ITEM_ID 10 hybrid
 耗时较长时可以用 `nohup` 包装完整流水线或任一阶段：
 
 ```bash
-mkdir -p logs
-nohup bash scripts/run_pipeline.sh > logs/pipeline.out 2>&1 &
+mkdir -p "$PAI_OUTPUT_DIR/logs"
+nohup bash scripts/run_pipeline.sh --work-dir "$PAI_OUTPUT_DIR" \
+  > "$PAI_OUTPUT_DIR/logs/pipeline.out" 2>&1 &
 echo $!
 ```
 
-重新连接后执行 `tail -f logs/pipeline.out` 查看日志。`nohup` 只能避免进程因 SSH 会话断开而退出，不能防止机器重启、任务超时、OOM 或节点故障。不要同时对同一目录执行相同阶段，否则可能并发写入同名文件。
+重新连接后执行 `tail -f "$PAI_OUTPUT_DIR/logs/pipeline.out"` 查看日志。`nohup` 只能避免进程因 SSH 会话断开而退出，不能防止机器重启、任务超时、OOM 或节点故障。不要同时对同一目录执行相同阶段，否则可能并发写入同名文件。
 
 ## 数据流与输出
 
 ```mermaid
 flowchart LR
-    O[ODPS 商品与订单数据] -->|fetch_data| R[dataset/raw/*.csv]
-    R -->|generate_embeddings| T[item.feat1CLS]
-    R -->|商品索引| I[item2index / index2item]
+    O[ODPS 商品与订单数据] -->|fetch_data| R[W/raw/*.csv]
+    R -->|generate_embeddings| T[W/embeddings/item.feat1CLS]
+    R -->|商品索引| I[W/embeddings/item2index / index2item]
     R -->|订单购物篮| B[Item2Vec 训练]
     I --> B
-    B --> V[behavior_item.npz]
+    B --> V[W/embeddings/behavior_item.npz]
     T --> F[文本与行为分数融合]
     V --> F
     I --> F
-    F --> Q[单商品 query CSV]
-    F --> E[全量 similarity CSV]
+    F --> Q[W/results/query CSV]
+    F --> E[W/results/similarity CSV]
 ```
 
-`behavior_item.npz` 包含行为向量 `vectors`、商品 ID `item_ids`、商品订单数 `order_counts` 和训练配置 `metadata`。文件写入后会先验证内容，再通过原子替换发布。没有有效行为信号的商品使用零向量，并在推理时回退到文本相似度。
+图中 `W` 表示 `--work-dir`。`behavior_item.npz` 包含行为向量 `vectors`、商品 ID `item_ids`、商品订单数 `order_counts` 和训练配置 `metadata`。文件写入后会先验证内容，再通过原子替换发布。没有有效行为信号的商品使用零向量，并在推理时回退到文本相似度。
 
 查询与批量导出的 CSV 使用相同字段：
 
@@ -158,15 +171,27 @@ flowchart LR
 
 ```bash
 PROJECT_DIR=/path/to/item2Vec
+WORK_DIR=/path/to/pai/output
+
 cd "$PROJECT_DIR"
 ```
+
+### 公共目录参数
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--work-dir DIR` | 项目内 `outputs/` | 全流程共享的产物根目录；独立运行各阶段时必须传入同一路径。 |
+| `--env-file FILE` | `dataset/raw/.env` | 仅 `fetch_data.sh` 和 `run_pipeline.sh` 支持。 |
+| `--model-dir DIR` | `dataset/m3e-base/` | 仅 `generate_embeddings.sh` 和 `run_pipeline.sh` 支持。 |
+
+选项可以放在位置参数之前或之后。未知选项、重复选项或缺少选项值会直接报错。
 
 ### 1. fetch_data：从 ODPS 获取数据
 
 #### 执行命令
 
 ```bash
-bash scripts/fetch_data.sh
+bash scripts/fetch_data.sh --work-dir "$WORK_DIR"
 ```
 
 #### 配置与输出
@@ -178,25 +203,25 @@ bash scripts/fetch_data.sh
 | `ALI_PROJECT` | 是 | 无 | ODPS Project |
 | `ALI_ENDPOINT` | 否 | 杭州 VPC Endpoint | ODPS 服务地址 |
 
-脚本固定读取 `dataset/raw/.env`，查询最近 30 个日历日的订单数据，并输出 `dataset/raw/item.csv` 和 `dataset/raw/order_item.csv`。
+脚本默认读取 `dataset/raw/.env`，可用 `--env-file FILE` 覆盖。它查询最近 30 个日历日的订单数据，并输出 `<work-dir>/raw/item.csv` 和 `<work-dir>/raw/order_item.csv`。
 
 ### 2. generate_embeddings：生成商品文本向量
 
 #### 执行命令
 
 ```bash
-bash scripts/generate_embeddings.sh
+bash scripts/generate_embeddings.sh --work-dir "$WORK_DIR"
 ```
 
 #### 前置文件与输出
 
 | 类型 | 路径 | 说明 |
 | --- | --- | --- |
-| 输入 | `dataset/raw/item.csv` | 必须包含 `prod_id,prod_description` |
+| 输入 | `<work-dir>/raw/item.csv` | 必须包含 `prod_id,prod_description` |
 | 输入 | `dataset/m3e-base/` | 本地 M3E/BERT 模型目录 |
-| 输出 | `dataset/downstream/item2index.json` | 商品 ID 到向量行号 |
-| 输出 | `dataset/downstream/index2item.json` | 向量行号到商品 ID |
-| 输出 | `dataset/downstream/item.feat1CLS` | 768 维 float32 文本向量 |
+| 输出 | `<work-dir>/embeddings/item2index.json` | 商品 ID 到向量行号 |
+| 输出 | `<work-dir>/embeddings/index2item.json` | 向量行号到商品 ID |
+| 输出 | `<work-dir>/embeddings/item.feat1CLS` | 768 维 float32 文本向量 |
 
 脚本自动选择 CUDA 或 CPU。文本以每批 4 条、最大 512 Token 编码，并取模型的 CLS 向量。
 
@@ -205,13 +230,13 @@ bash scripts/generate_embeddings.sh
 #### 默认训练
 
 ```bash
-bash scripts/train.sh
+bash scripts/train.sh --work-dir "$WORK_DIR"
 ```
 
 #### 自定义训练参数
 
 ```bash
-bash scripts/train.sh 128 30 15 10
+bash scripts/train.sh 128 30 15 10 --work-dir "$WORK_DIR"
 ```
 
 四个位置参数必须同时提供：
@@ -226,23 +251,23 @@ bash scripts/train.sh 128 30 15 10
 `MIN_ORDER_COUNT` 环境变量默认为 `5`，控制商品参与行为训练所需的最小订单数：
 
 ```bash
-MIN_ORDER_COUNT=8 bash scripts/train.sh
+MIN_ORDER_COUNT=8 bash scripts/train.sh --work-dir "$WORK_DIR"
 ```
 
-训练使用固定的全购物篮 SGNS，并将结果写入 `dataset/downstream/behavior_item.npz`。
+训练使用固定的全购物篮 SGNS，并将结果写入 `<work-dir>/embeddings/behavior_item.npz`。
 
 ### 4. query_similar：查询单个商品
 
 #### 执行示例
 
 ```bash
-bash scripts/query_similar.sh ITEM_ID 10 hybrid 0.7
+bash scripts/query_similar.sh ITEM_ID 10 hybrid 0.7 --work-dir "$WORK_DIR"
 ```
 
 #### 可执行参数
 
 ```text
-bash scripts/query_similar.sh ITEM_ID [TOPK [RECALL_MODE [TEXT_WEIGHT]]]
+bash scripts/query_similar.sh ITEM_ID [TOPK [RECALL_MODE [TEXT_WEIGHT]]] [--work-dir DIR]
 ```
 
 | 位置 | 参数 | 是否必填 | 默认值 | 说明 |
@@ -252,7 +277,7 @@ bash scripts/query_similar.sh ITEM_ID [TOPK [RECALL_MODE [TEXT_WEIGHT]]]
 | 3 | `RECALL_MODE` | 否 | `hybrid` | `similar`、`complement` 或 `hybrid` |
 | 4 | `TEXT_WEIGHT` | 否 | 模式默认值 | 文本基础权重，范围为 0 至 1 |
 
-结果写入 `dataset/downstream/query_<ITEM_ID>.csv`。文件名中的不安全字符会替换为下划线。
+结果写入 `<work-dir>/results/query_<ITEM_ID>.csv`。文件名中的不安全字符会替换为下划线。
 
 ### 5. export_similarities：批量导出相似商品
 
@@ -260,13 +285,13 @@ bash scripts/query_similar.sh ITEM_ID [TOPK [RECALL_MODE [TEXT_WEIGHT]]]
 
 ```bash
 FULL_CONFIDENCE_ORDERS=50 \
-  bash scripts/export_similarities.sh 20 512 complement 0.3
+  bash scripts/export_similarities.sh 20 512 complement 0.3 --work-dir "$WORK_DIR"
 ```
 
 #### 可执行参数
 
 ```text
-bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]]]]
+bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]]]] [--work-dir DIR]
 ```
 
 | 位置 | 参数 | 是否必填 | 默认值 | 说明 |
@@ -276,7 +301,7 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 | 3 | `RECALL_MODE` | 否 | `hybrid` | `similar`、`complement` 或 `hybrid` |
 | 4 | `TEXT_WEIGHT` | 否 | 模式默认值 | 文本基础权重，范围为 0 至 1 |
 
-结果写入 `dataset/downstream/item_similarity_<mode>.csv`。`BLOCK_SIZE` 只控制分块计算规模，不改变相似度结果。
+结果写入 `<work-dir>/results/item_similarity_<mode>.csv`。`BLOCK_SIZE` 只控制分块计算规模，不改变相似度结果。
 
 ### 推理模式、权重与订单置信度
 
@@ -319,7 +344,7 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 ```bash
 RECALL_MODE=similar \
 FULL_CONFIDENCE_ORDERS=80 \
-  bash scripts/export_similarities.sh 20 512
+  bash scripts/export_similarities.sh 20 512 --work-dir "$WORK_DIR"
 ```
 
 位置参数的优先级高于同名环境变量。
