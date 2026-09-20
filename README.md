@@ -92,21 +92,21 @@ ALI_ENDPOINT=https://your-maxcompute-endpoint/api
     └── item_similarity_<mode>.csv
 ```
 
-ODPS 配置和文本模型属于外部输入，不写入工作目录。可分别通过 `--env-file` 和 `--model-dir` 指向 PAI 的独立挂载目录。
+ODPS 配置和文本模型属于外部输入，不写入工作目录。可分别通过 `--env-file` 和 `--model-dir` 指向本地目录、共享存储或挂载目录。
 
 ## 完整流程
 
 执行完整训练流水线：
 
 ```bash
-bash scripts/run_pipeline.sh --work-dir "$PAI_OUTPUT_DIR"
+bash scripts/run_pipeline.sh --work-dir "$WORK_DIR"
 ```
 
 如果 ODPS 配置和文本模型也使用挂载目录：
 
 ```bash
 bash scripts/run_pipeline.sh \
-  --work-dir "$PAI_OUTPUT_DIR" \
+  --work-dir "$WORK_DIR" \
   --env-file /path/to/mounted/.env \
   --model-dir /path/to/mounted/m3e-base
 ```
@@ -116,13 +116,13 @@ bash scripts/run_pipeline.sh \
 训练完成后批量导出每个商品的 Top-20 相似商品：
 
 ```bash
-bash scripts/export_similarities.sh 20 512 hybrid --work-dir "$PAI_OUTPUT_DIR"
+bash scripts/export_similarities.sh 20 512 hybrid --work-dir "$WORK_DIR"
 ```
 
 查询单个商品：
 
 ```bash
-bash scripts/query_similar.sh ITEM_ID 10 hybrid --work-dir "$PAI_OUTPUT_DIR"
+bash scripts/query_similar.sh ITEM_ID 10 hybrid --work-dir "$WORK_DIR"
 ```
 
 ### 使用 nohup 后台执行
@@ -130,13 +130,13 @@ bash scripts/query_similar.sh ITEM_ID 10 hybrid --work-dir "$PAI_OUTPUT_DIR"
 耗时较长时可以用 `nohup` 包装完整流水线或任一阶段：
 
 ```bash
-mkdir -p "$PAI_OUTPUT_DIR/logs"
-nohup bash scripts/run_pipeline.sh --work-dir "$PAI_OUTPUT_DIR" \
-  > "$PAI_OUTPUT_DIR/logs/pipeline.out" 2>&1 &
+mkdir -p "$WORK_DIR/logs"
+nohup bash scripts/run_pipeline.sh --work-dir "$WORK_DIR" \
+  > "$WORK_DIR/logs/pipeline.out" 2>&1 &
 echo $!
 ```
 
-重新连接后执行 `tail -f "$PAI_OUTPUT_DIR/logs/pipeline.out"` 查看日志。`nohup` 只能避免进程因 SSH 会话断开而退出，不能防止机器重启、任务超时、OOM 或节点故障。不要同时对同一目录执行相同阶段，否则可能并发写入同名文件。
+重新连接后执行 `tail -f "$WORK_DIR/logs/pipeline.out"` 查看日志。`nohup` 只能避免进程因 SSH 会话断开而退出，不能防止机器重启、任务超时、OOM 或节点故障。不要同时对同一目录执行相同阶段，否则可能并发写入同名文件。
 
 ## 数据流与输出
 
@@ -171,7 +171,7 @@ flowchart LR
 
 ```bash
 PROJECT_DIR=/path/to/item2Vec
-WORK_DIR=/path/to/pai/output
+WORK_DIR=/path/to/output
 
 cd "$PROJECT_DIR"
 ```
