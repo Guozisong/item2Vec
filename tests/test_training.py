@@ -149,6 +149,43 @@ def test_write_behavior_embedding_stores_counts_metadata_and_replaces_atomically
         assert artifact["metadata"].item() == json.dumps(metadata, sort_keys=True)
 
 
+def test_write_behavior_embedding_works_with_nonseekable_output(monkeypatch, tmp_path):
+    real_open = training.Path.open
+    temporary_path = tmp_path / "behavior_item.npz.tmp"
+
+    class NonseekableWriter:
+        def __init__(self, stream):
+            self.stream = stream
+            self.seeks = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def seek(self, *args):
+            self.seeks += 1
+            if self.seeks > 1:
+                raise OSError(22, "Invalid argument")
+            return self.stream.seek(*args)
+
+    def open_output(path, mode='r', *args, **kwargs):
+        stream = real_open(path, mode, *args, **kwargs)
+        if path == temporary_path and mode == 'wb':
+            return NonseekableWriter(stream)
+        return stream
+
+    monkeypatch.setattr(training.Path, 'open', open_output)
+    output_path = write_behavior_embedding(np.eye(2), {"0": "A", "1": "B"}, [5, 5], {}, tmp_path)
+
+    with np.load(output_path, allow_pickle=False) as artifact:
+        np.testing.assert_array_equal(artifact['vectors'], np.eye(2))
+
+
 @pytest.mark.parametrize("failure", ["write", "validation", "replace"])
 def test_write_behavior_embedding_preserves_existing_artifact_on_failure(monkeypatch, tmp_path, failure):
     existing = tmp_path / "behavior_item.npz"

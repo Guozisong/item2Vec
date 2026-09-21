@@ -1,6 +1,8 @@
 import argparse
 import json
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -132,35 +134,39 @@ def write_behavior_embedding(embedding, index2item, order_counts, metadata, down
     counts = _validate_order_counts(order_counts, len(index2item)).astype(np.int64)
     metadata_json = json.dumps(metadata, sort_keys=True)
     try:
-        with temporary_path.open('wb') as stream:
+        with tempfile.TemporaryFile() as stream:
             np.savez(stream, vectors=np.asarray(embedding, dtype=np.float32), item_ids=item_ids,
                      order_counts=counts, metadata=metadata_json)
-        with np.load(temporary_path, allow_pickle=False) as artifact:
-            required = {'vectors', 'item_ids', 'order_counts', 'metadata'}
-            if not required.issubset(artifact.files):
-                raise ValueError('Behavior artifact is missing required arrays')
-            vectors = artifact['vectors']
-            if vectors.ndim != 2:
-                raise ValueError('Behavior vectors must be 2D')
-            if vectors.shape[0] != len(item_ids):
-                raise ValueError('Behavior vector row count must match the catalog')
-            if vectors.shape[1] < 1:
-                raise ValueError('Behavior vector dimension must be positive')
-            if not np.isfinite(vectors).all():
-                raise ValueError('Behavior vectors must be finite')
-            if not np.any(vectors):
-                raise ValueError('Behavior vector coverage must be nonzero')
-            saved_counts = _validate_order_counts(artifact['order_counts'], len(item_ids))
-            if saved_counts.dtype != np.int64:
-                raise ValueError('order_counts must have int64 dtype')
-            if not np.array_equal(artifact['item_ids'], item_ids):
-                raise ValueError('Behavior item_ids must match the catalog exactly')
-            try:
-                saved_metadata = json.loads(artifact['metadata'].item())
-            except (ValueError, TypeError) as error:
-                raise ValueError('Behavior metadata must contain JSON') from error
-            if saved_metadata != metadata:
-                raise ValueError('Behavior metadata does not match training configuration')
+            stream.seek(0)
+            with np.load(stream, allow_pickle=False) as artifact:
+                required = {'vectors', 'item_ids', 'order_counts', 'metadata'}
+                if not required.issubset(artifact.files):
+                    raise ValueError('Behavior artifact is missing required arrays')
+                vectors = artifact['vectors']
+                if vectors.ndim != 2:
+                    raise ValueError('Behavior vectors must be 2D')
+                if vectors.shape[0] != len(item_ids):
+                    raise ValueError('Behavior vector row count must match the catalog')
+                if vectors.shape[1] < 1:
+                    raise ValueError('Behavior vector dimension must be positive')
+                if not np.isfinite(vectors).all():
+                    raise ValueError('Behavior vectors must be finite')
+                if not np.any(vectors):
+                    raise ValueError('Behavior vector coverage must be nonzero')
+                saved_counts = _validate_order_counts(artifact['order_counts'], len(item_ids))
+                if saved_counts.dtype != np.int64:
+                    raise ValueError('order_counts must have int64 dtype')
+                if not np.array_equal(artifact['item_ids'], item_ids):
+                    raise ValueError('Behavior item_ids must match the catalog exactly')
+                try:
+                    saved_metadata = json.loads(artifact['metadata'].item())
+                except (ValueError, TypeError) as error:
+                    raise ValueError('Behavior metadata must contain JSON') from error
+                if saved_metadata != metadata:
+                    raise ValueError('Behavior metadata does not match training configuration')
+            stream.seek(0)
+            with temporary_path.open('wb') as output:
+                shutil.copyfileobj(stream, output)
         os.replace(temporary_path, output_path)
     finally:
         temporary_path.unlink(missing_ok=True)
