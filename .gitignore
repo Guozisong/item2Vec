@@ -10,3 +10,4 @@ dataset/m3e-base/
 dataset/downstream/
 
 outputs/
+.DS_Store

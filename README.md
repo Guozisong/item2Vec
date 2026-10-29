@@ -1,24 +1,45 @@
 # Item2Vec 文本与行为融合召回
 
-本项目使用 M3E/BERT 生成商品文本向量，使用 Item2Vec 生成订单共现行为向量，并在推理阶段融合两路余弦相似度，用于相似商品召回。所有流程通过 `scripts/` 下的 Bash 脚本执行，Python 实现位于 `src/item2vec/`。
+本项目使用 M3E/BERT 生成商品文本向量，使用 Item2Vec 学习订单购物篮行为。共购召回使用 `complement`：有行为使用自身向量，无行为尝试同品类商品的行为迁移，参考不足时回退文本，并通过 `recall_source` 标明来源。`similar` 和 `hybrid` 融合文本与行为余弦相似度。所有流程通过 `scripts/` 下的 Bash 脚本执行，Python 实现位于 `src/item2vec/`。
+
+## 共购召回快速开始
+
+已有配套的 `<work-dir>/raw/` 订单与商品文件，以及 `<work-dir>/embeddings/` 文本向量与索引时，执行：
+
+```bash
+WORK_DIR=/ml/output/output
+bash scripts/preprocess_baskets.sh 30 5 --work-dir "$WORK_DIR"
+bash scripts/train.sh 256 30 15 10 --work-dir "$WORK_DIR"
+bash scripts/export_similarities.sh 50 512 complement 0 --work-dir "$WORK_DIR"
+bash scripts/query_similar.sh ITEM_ID 50 complement 0 --work-dir "$WORK_DIR"
+```
+
+升级旧项目时须先新增预处理阶段，再重新训练以生成上下文向量和候选偏置。冷启动迁移需保留 `raw/item.csv`；接收结果的程序需兼容新增的 `recall_source` 列。分数为候选排名分数，不是购买概率，迁移与文本回退结果也不代表该商品已经发生的共购。
 
 ## 项目结构
 
 ```text
 scripts/fetch_data.sh              从 ODPS 获取商品与订单数据
 scripts/generate_embeddings.sh     生成商品文本向量和商品索引
+scripts/preprocess_baskets.sh      清洗购物篮并发布训练集
 scripts/train.sh                   训练 Item2Vec 行为向量
 scripts/query_similar.sh           查询单个商品的相似商品
 scripts/export_similarities.sh     批量导出所有商品的相似结果
-scripts/run_pipeline.sh            依次执行取数、文本向量生成和行为训练
+scripts/evaluate_item2vec.py       按时间切分订单并离线评估共购召回
+scripts/run_pipeline.sh            依次执行取数、文本向量生成、购物篮处理和行为训练
 src/item2vec/data_fetch.py         ODPS 查询与 CSV 导出
 src/item2vec/embedding.py          M3E/BERT 文本向量生成
-src/item2vec/training.py           购物篮构建与 Item2Vec 训练
+src/item2vec/preprocessing.py      购物篮清洗与训练集校验
+src/item2vec/training.py           Item2Vec 训练
 src/item2vec/inference.py          文本和行为分数融合与结果导出
+src/item2vec/scoring.py            从训练向量预计算候选偏置
+src/item2vec/cold_start.py         同品类参考选择与行为向量迁移
+src/item2vec/evaluation.py         时间留出与共购召回指标
 src/item2vec/io.py                 模型、向量和商品索引读写
 dataset/raw/.env                 默认 ODPS 配置文件
 dataset/m3e-base/                  默认本地预训练文本模型
 outputs/raw/                       默认原始数据目录
+outputs/processed/                 默认训练购物篮目录
 outputs/embeddings/                默认商品索引与向量目录
 outputs/results/                   默认推理结果目录
 tests/                             数据、训练、推理和脚本测试
@@ -39,7 +60,7 @@ tests/                             数据、训练、推理和脚本测试
 
 ### 订单行为数据
 
-`<work-dir>/raw/order_item.csv` 用于训练行为向量：
+`<work-dir>/raw/order_item.csv` 用于构建训练购物篮：
 
 | 字段 | 含义 | 使用方式 |
 | --- | --- | --- |
@@ -48,7 +69,7 @@ tests/                             数据、训练、推理和脚本测试
 | `prod_id` | 商品 ID | 映射到统一商品索引 |
 | `dt` | 订单日期 | 作为必填数据字段进行校验 |
 
-训练会对同一订单内的商品去重，并按商品索引排序。含 2 至 `MAX_BASKET_SIZE` 个不同商品的订单进入训练；超过上限的订单会被排除。单商品订单不产生训练商品对，但仍会计入该商品的订单数。
+预处理会按完整订单分组、对商品去重、排除商品目录外的记录。保留 2 至 `MAX_BASKET_SIZE` 个不同商品的订单，再移除在有效购物篮中出现少于 `MIN_ORDER_COUNT` 单的商品；过滤后少于两件的篮不进入训练。单商品订单不产生训练商品对，但仍会计入推理使用的商品总订单数。同细分类购物篮保留，由 Item2Vec 学习行为关系。
 
 ## 环境与目录
 
@@ -82,6 +103,10 @@ ALI_ENDPOINT=https://your-maxcompute-endpoint/api
 ├── raw/
 │   ├── item.csv
 │   └── order_item.csv
+├── processed/
+│   ├── baskets.jsonl
+│   ├── support.npz
+│   └── manifest.json
 ├── embeddings/
 │   ├── item2index.json
 │   ├── index2item.json
@@ -99,6 +124,7 @@ ODPS 配置和文本模型属于外部输入，不写入工作目录。可分别
 执行完整训练流水线：
 
 ```bash
+WORK_DIR=/path/to/output
 bash scripts/run_pipeline.sh --work-dir "$WORK_DIR"
 ```
 
@@ -111,18 +137,18 @@ bash scripts/run_pipeline.sh \
   --model-dir /path/to/mounted/m3e-base
 ```
 
-执行顺序固定为：`fetch_data → generate_embeddings → train`。任一阶段失败，脚本会立即停止。完整流水线训练完成后结束，不自动执行相似度查询或批量导出。
+执行顺序固定为：`fetch_data → generate_embeddings → preprocess_baskets → train`。任一阶段失败，脚本会立即停止。完整流水线训练完成后结束，不自动执行相似度查询或批量导出。
 
 训练完成后批量导出每个商品的 Top-20 相似商品：
 
 ```bash
-bash scripts/export_similarities.sh 20 512 hybrid --work-dir "$WORK_DIR"
+bash scripts/export_similarities.sh 20 512 complement 0 --work-dir "$WORK_DIR"
 ```
 
 查询单个商品：
 
 ```bash
-bash scripts/query_similar.sh ITEM_ID 10 hybrid --work-dir "$WORK_DIR"
+bash scripts/query_similar.sh ITEM_ID 10 complement 0 --work-dir "$WORK_DIR"
 ```
 
 ### 使用 nohup 后台执行
@@ -145,7 +171,8 @@ flowchart LR
     O[ODPS 商品与订单数据] -->|fetch_data| R[W/raw/*.csv]
     R -->|generate_embeddings| T[W/embeddings/item.feat1CLS]
     R -->|商品索引| I[W/embeddings/item2index / index2item]
-    R -->|订单购物篮| B[Item2Vec 训练]
+    R -->|原始订单| P[购物篮预处理]
+    P -->|有效购物篮| B[Item2Vec 训练]
     I --> B
     B --> V[W/embeddings/behavior_item.npz]
     T --> F[文本与行为分数融合]
@@ -155,7 +182,7 @@ flowchart LR
     F --> E[W/results/similarity CSV]
 ```
 
-图中 `W` 表示 `--work-dir`。`behavior_item.npz` 包含行为向量 `vectors`、商品 ID `item_ids`、商品订单数 `order_counts` 和训练配置 `metadata`。文件写入后会先验证内容，再通过原子替换发布。没有有效行为信号的商品使用零向量，并在推理时回退到文本相似度。
+图中 `W` 表示 `--work-dir`。`behavior_item.npz` 包含行为向量 `vectors`、上下文向量 `context_vectors`、预计算候选偏置 `candidate_bias`、商品 ID `item_ids`、商品总订单数 `order_counts` 和训练配置 `metadata`。文件写入后会先验证内容，再通过原子替换发布。没有有效行为信号的商品使用零向量；`similar` 和 `hybrid` 可回退到文本相似度，`complement` 按自身行为、迁移行为、文本回退的顺序选择路径。旧产物缺少上下文向量时，`complement` 仍使用输入向量余弦；缺少候选偏置时使用未经校正的上下文内积。
 
 查询与批量导出的 CSV 使用相同字段：
 
@@ -163,7 +190,8 @@ flowchart LR
 | --- | --- |
 | `master_prod_id` | 当前查询或主商品 ID |
 | `slave_prod_id` | 召回的相似商品 ID |
-| `similarity` | 文本与行为融合后的余弦相似度 |
+| `similarity` | `similar/hybrid` 为融合余弦；`complement` 为候选百分位排名分数 |
+| `recall_source` | 仅 `complement` 输出：`behavior` 自身行为、`behavior_transfer` 迁移行为、`text_fallback` 文本回退 |
 
 ## 各阶段 Bash 命令与参数
 
@@ -205,6 +233,8 @@ bash scripts/fetch_data.sh --work-dir "$WORK_DIR"
 
 脚本默认读取 `dataset/raw/.env`，可用 `--env-file FILE` 覆盖。它查询最近 30 个日历日的订单数据，并输出 `<work-dir>/raw/item.csv` 和 `<work-dir>/raw/order_item.csv`。
 
+日期范围设置在 `src/item2vec/data_fetch.py` 的 `ORDER_ITEM_SQL`：`dateadd(getdate(), -29, 'dd')` 包含今天共30天。如需近90天，可将 `-29` 改为 `-89`。本次本地全量模型使用用户提供的2026-07-30至2026-10-28共91天订单；该文件范围与取数脚本默认范围不同。
+
 ### 2. generate_embeddings：生成商品文本向量
 
 #### 执行命令
@@ -225,7 +255,15 @@ bash scripts/generate_embeddings.sh --work-dir "$WORK_DIR"
 
 脚本自动选择 CUDA 或 CPU。文本以每批 4 条、最大 512 Token 编码，并取模型的 CLS 向量。
 
-### 3. train：训练行为向量
+### 3. preprocess_baskets：生成训练购物篮
+
+```bash
+bash scripts/preprocess_baskets.sh 30 5 --work-dir "$WORK_DIR"
+```
+
+参数依次为最大篮大小和商品在有效多商品篮中的最低订单数，默认 `30`、`5`。处理结果写入 `<work-dir>/processed/`：`baskets.jsonl` 是有序商品索引购物篮，`support.npz` 保存有效篮支持数与全部订单数，`manifest.json` 记录过滤计数、参数和文件哈希。修改原始订单、商品索引或过滤参数后，需重新运行预处理。
+
+### 4. train：训练行为向量
 
 #### 默认训练
 
@@ -248,15 +286,16 @@ bash scripts/train.sh 128 30 15 10 --work-dir "$WORK_DIR"
 | 3 | `NEGATIVE` | `15` | SGNS 负采样数量 |
 | 4 | `EPOCHS` | `10` | 训练轮数 |
 
-`MIN_ORDER_COUNT` 环境变量默认为 `5`，控制商品参与行为训练所需的最小订单数：
+`MIN_ORDER_COUNT` 环境变量默认为 `5`，控制商品参与行为训练所需的最小有效购物篮订单数。该值和 `MAX_BASKET_SIZE` 必须与预处理阶段一致：
 
 ```bash
+MIN_ORDER_COUNT=8 bash scripts/preprocess_baskets.sh 30 8 --work-dir "$WORK_DIR"
 MIN_ORDER_COUNT=8 bash scripts/train.sh --work-dir "$WORK_DIR"
 ```
 
-训练使用固定的全购物篮 SGNS，并将结果写入 `<work-dir>/embeddings/behavior_item.npz`。
+训练只读取已校验的 `processed` 产物，使用固定的全购物篮 SGNS，并将结果写入 `<work-dir>/embeddings/behavior_item.npz`。负采样指数 `ns_exponent` 为 `0.5`，高频抽样 `sample=0`；这组设置由验证期实验选定。训练结束后分块计算候选偏置并存入同一产物。需要重新训练才能使用新的负采样设置和候选校正。
 
-### 4. query_similar：查询单个商品
+### 5. query_similar：查询单个商品
 
 #### 执行示例
 
@@ -279,13 +318,12 @@ bash scripts/query_similar.sh ITEM_ID [TOPK [RECALL_MODE [TEXT_WEIGHT]]] [--work
 
 结果写入 `<work-dir>/results/query_<ITEM_ID>.csv`。文件名中的不安全字符会替换为下划线。
 
-### 5. export_similarities：批量导出相似商品
+### 6. export_similarities：批量导出相似商品
 
 #### 执行示例
 
 ```bash
-FULL_CONFIDENCE_ORDERS=50 \
-  bash scripts/export_similarities.sh 20 512 complement 0.3 --work-dir "$WORK_DIR"
+bash scripts/export_similarities.sh 50 512 complement 0 --work-dir "$WORK_DIR"
 ```
 
 #### 可执行参数
@@ -299,9 +337,9 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 | 1 | `TOPK` | 否 | `10` | 每个商品导出的相似商品数量 |
 | 2 | `BLOCK_SIZE` | 否 | `512` | 每批计算的主商品数量 |
 | 3 | `RECALL_MODE` | 否 | `hybrid` | `similar`、`complement` 或 `hybrid` |
-| 4 | `TEXT_WEIGHT` | 否 | 模式默认值 | 文本基础权重，范围为 0 至 1 |
+| 4 | `TEXT_WEIGHT` | 否 | 模式默认值 | 文本权重，范围为 0 至 1；`complement` 中用于百分位排名融合 |
 
-结果写入 `<work-dir>/results/item_similarity_<mode>.csv`。`BLOCK_SIZE` 只控制分块计算规模，不改变相似度结果。
+结果写入 `<work-dir>/results/item_similarity_<mode>.csv`。`BLOCK_SIZE` 只控制分块计算规模，不改变相似度结果。`complement` 对无行为主商品依次尝试行为迁移和文本回退；无行为且文本向量为零时仍无结果，自身行为与迁移路径也可能因有效候选不足而少于 `TOPK` 条。
 
 ### 推理模式、权重与订单置信度
 
@@ -310,10 +348,14 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 | 模式 | 文本基础权重 | 行为基础权重 | 用途 |
 | --- | ---: | ---: | --- |
 | `similar` | `0.85` | `0.15` | 更重视文本语义相似 |
-| `complement` | `0.20` | `0.80` | 更重视订单共现行为 |
+| `complement` | `0` | `1` | 优先挖掘 Item2Vec 学到的共购关系 |
 | `hybrid` | `0.60` | `0.40` | 平衡文本和行为，默认模式 |
 
-位置参数 `TEXT_WEIGHT` 或同名环境变量会覆盖模式的文本基础权重。`FULL_CONFIDENCE_ORDERS` 是商品行为信号达到满置信所需的订单数，默认值为 `50`。
+位置参数 `TEXT_WEIGHT` 或同名环境变量会覆盖模式的文本权重。`similar` 和 `hybrid` 使用以下订单置信度公式。`complement` 的自身行为与迁移行为路径从有行为向量的商品中选候选；文本回退路径可选全部目录商品。它不使用 `FULL_CONFIDENCE_ORDERS`，也不要求商品对在训练期直接同单。
+
+`complement` 对没有自身行为向量的主商品，先从同细分类、有行为向量的商品中选文本余弦至少为 `0.8` 的最多5个参考商品，至少需要2个。以温度 `0.1` 的 softmax 权重平均其输入行为向量，再使用既有上下文内积和候选偏置打分。细分类从 `<work-dir>/raw/item.csv` 描述中 `商品品牌为` 前的内容取得；类别文件缺失、类别未知或参考不足时回退到文本相似度。零文本向量且无行为的商品仍返回空结果。迁移向量只用于本次推理，不写回训练产物。
+
+调用方需兼容 `complement` CSV 新增的 `recall_source` 列，并区分推断的共购与实际行为学习结果。旧行为产物可直接用于这条回退链，无需为接入回退链重新训练。单品查询与批量导出使用相同路径。
 
 每个商品的行为置信度为：
 
@@ -329,7 +371,9 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 最终相似度 = 实际文本权重 × 文本相似度 + 实际行为权重 × 行为相似度
 ```
 
-例如文本基础权重设为 `0`，满置信订单数为 `50`。商品 A 有 10 单，商品 B 有 80 单，则商品对置信度为 `0.2`，最终仍使用 `0.8` 的文本权重和 `0.2` 的行为权重。只有两件商品都达到 50 单时，才完全使用行为相似度。任一商品缺少有效行为向量时，该商品对完全回退到文本相似度。
+例如在 `hybrid` 模式下，文本基础权重设为 `0`，满置信订单数为 `50`。商品 A 有 10 单，商品 B 有 80 单，则商品对置信度为 `0.2`，最终仍使用 `0.8` 的文本权重和 `0.2` 的行为权重。只有两件商品都达到 50 单时，才完全使用行为相似度。任一商品缺少有效行为向量时，该商品对完全回退到文本相似度。
+
+`complement` 在有行为向量的候选中，先对输入商品向量与候选上下文向量的内积作校正，再转换为百分位排名。候选偏置为该候选与全部有效输入向量的最高 10 个内积的均值乘以 `0.4`（不足 10 个时取全部）；每个商品对分数减去候选偏置，以缓解少数候选普遍占据前列的问题。偏置完全来自训练向量，已在训练阶段预计算。提供非零 `TEXT_WEIGHT` 时再融合文本余弦百分位排名，默认文本权重为 `0`。输出 `similarity` 是融合排名分数，不是余弦值；旧版结果的绝对分数阈值不能直接沿用。直接同单次数只用于离线评估，不参与排序。
 
 推理相关环境变量如下：
 
@@ -337,7 +381,7 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 | --- | --- | --- |
 | `RECALL_MODE` | `hybrid` | 未提供对应位置参数时使用 |
 | `TEXT_WEIGHT` | 模式默认值 | 未提供对应位置参数时使用 |
-| `FULL_CONFIDENCE_ORDERS` | `50` | 行为信号达到满置信所需的订单数 |
+| `FULL_CONFIDENCE_ORDERS` | `50` | `similar`、`hybrid` 中行为信号达到满置信所需的订单数；`complement` 忽略 |
 
 环境变量可以与位置参数组合使用：
 
@@ -348,3 +392,37 @@ FULL_CONFIDENCE_ORDERS=80 \
 ```
 
 位置参数的优先级高于同名环境变量。
+
+### 离线评估 Item2Vec 共购召回
+
+```bash
+python scripts/evaluate_item2vec.py split /path/to/order_item.csv \
+  --train /tmp/item2vec_train.csv \
+  --validation /tmp/item2vec_validation.csv \
+  --test /tmp/item2vec_test.csv
+
+python scripts/evaluate_item2vec.py evaluate /tmp/item2vec_test.csv \
+  /path/to/baseline.csv /path/to/candidate.csv --top-k 50 \
+  --item-csv /path/to/item.csv
+```
+
+默认使用最后 14 天测试、此前 14 天验证，其余订单训练；可用 `--test-days`、`--validation-days` 调整。先分别用**同一训练期**训练基线和候选模型并导出结果，再用上述 `evaluate` 命令比较 `Recall@50`、按留出同单次数加权的 `Recall@50`、`NDCG@50` 和商品覆盖率。提供 `--item-csv` 后还会输出同细分类与跨细分类加权召回；未知类别商品对从这两项分母中排除。不能直接用包含测试期订单的全量模型结果作基线。
+
+本次购物篮处理、上下文向量实验和鸡蛋/豆腐案例见 [`docs/2026-10-29-item2vec-co-basket-results.md`](docs/2026-10-29-item2vec-co-basket-results.md)。
+
+冷启动方案、按商品留出方法与结果见 [`docs/2026-10-29-cold-start-results.md`](docs/2026-10-29-cold-start-results.md)。以下为一次时间留出结果，需在后续时间窗口复核：
+
+| 对照 | 指标 | 基线 | 优化后 |
+| --- | --- | ---: | ---: |
+| 已有行为商品：输入余弦 → 上下文打分、负采样与候选校正 | 跨细分类加权 Recall@50 | 4.064% | 9.080% |
+| 已有行为商品：上一版上下文 → 本轮训练与打分优化 | 前100候选占比 | 60.62% | 56.32% |
+| 100个按商品留出的冷启动商品：文本 → 行为迁移 | 整体加权 Recall@50 | 10.46% | 15.87% |
+
+## 验证与本地产物
+
+```bash
+PYTHONPATH=src python -m pytest -q
+bash -n scripts/*.sh
+```
+
+`outputs/`、原始CSV、模型和凭据均不提交到Git。实验对照模型、临时导出和缓存可在实验结束后清理；应保留生产工作目录的 `raw/`、`processed/`、`embeddings/` 和最终 `results/`，以及验证报告。报告中的历史实验路径可能已随中间文件清理而删除。

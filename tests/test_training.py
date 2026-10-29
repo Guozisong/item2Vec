@@ -303,6 +303,7 @@ def test_train_uses_fixed_full_basket_window_and_configured_parameters(captured_
     assert captured["init"]["min_count"] == 1
     assert captured["init"]["sg"] == 1
     assert captured["init"]["negative"] == 4
+    assert captured["init"]["ns_exponent"] == .5
     assert captured["init"]["epochs"] == 6
     assert captured["init"]["workers"] == 1
     assert captured["init"]["sample"] == 0
@@ -352,66 +353,67 @@ def test_main_trains_behavior_only_and_preserves_string_product_ids(monkeypatch,
     raw_dir = tmp_path / "raw"
     raw_dir.mkdir()
     (raw_dir / "order_item.csv").write_text(
-        "order_id,user_id,dt,prod_id\no1,u1,d1,001\no1,u1,d1,B\no2,u1,d1,001\n",
+        "order_id,user_id,dt,prod_id\no1,u1,20261001,001\no1,u1,20261001,B\n"
+        "o2,u1,20261001,001\no3,u1,20261001,001\no3,u1,20261001,B\n",
         encoding="utf-8",
     )
     (tmp_path / "item2index.json").write_text(json.dumps({"001": 0, "B": 1}))
     (tmp_path / "index2item.json").write_text(json.dumps({"0": "001", "1": "B"}))
+    from item2vec.preprocessing import preprocess_baskets
+    processed_dir = tmp_path / "processed"
+    preprocess_baskets(raw_dir, tmp_path, processed_dir, max_basket_size=9,
+                       min_co_basket_orders=2)
     monkeypatch.setattr(training, "tqdm", lambda iterable, **_kwargs: iterable)
     monkeypatch.setattr(
         training,
         "train_item2vec",
         lambda item2index, baskets, order_counts, **kwargs: (
             captured.update(item2index=item2index, baskets=baskets, order_counts=order_counts, **kwargs)
-            or (np.ones((2, kwargs["vector_size"]), dtype=np.float32), None)
+            or (np.ones((2, kwargs["vector_size"]), dtype=np.float32),
+                types.SimpleNamespace(wv=types.SimpleNamespace(index_to_key=['0', '1']),
+                                      syn1neg=np.arange(8, dtype=np.float32).reshape(2, 4)))
         )
     )
 
-    training.main([str(raw_dir), str(tmp_path), "--vector-size", "4", "--max-basket-size", "9",
+    training.main([str(processed_dir), str(tmp_path), "--vector-size", "4", "--max-basket-size", "9",
                    "--negative", "3", "--epochs", "7", "--min-order-count", "2"])
 
     assert captured["item2index"] == {"001": 0, "B": 1}
-    assert captured["baskets"] == [["0", "1"]]
-    np.testing.assert_array_equal(captured["order_counts"], [2, 1])
+    assert captured["baskets"] == [["0", "1"], ["0", "1"]]
+    np.testing.assert_array_equal(captured["order_counts"], [2, 2])
     assert (captured["max_basket_size"], captured["negative"], captured["epochs"], captured["min_order_count"]) == (9, 3, 7, 2)
     with np.load(tmp_path / "behavior_item.npz", allow_pickle=False) as artifact:
         assert artifact["vectors"].shape == (2, 4)
+        np.testing.assert_array_equal(artifact['context_vectors'],
+                                      np.arange(8, dtype=np.float32).reshape(2, 4))
         assert artifact["item_ids"].tolist() == ["001", "B"]
-        assert artifact["order_counts"].tolist() == [2, 1]
+        assert artifact["order_counts"].tolist() == [3, 2]
         assert json.loads(artifact["metadata"].item()) == {
             "vector_size": 4, "max_basket_size": 9, "negative": 3, "epochs": 7, "min_order_count": 2,
+            "ns_exponent": .5,
         }
     output = capsys.readouterr().out
-    assert "已读取 3 条行为，包含 2 个订单。" in output
-    assert "已构建 1 个有效购物篮" in output
+    assert "已读取 5 条行为，包含 3 个订单。" in output
+    assert "已构建 2 个有效购物篮" in output
     assert "排除 0 个超大购物篮" in output
     assert "商品目录共 2 个商品" in output
     assert "行为向量覆盖 2 个商品" in output
+    assert "complement 模式尝试行为迁移后回退文本" in output
     assert str(tmp_path / "behavior_item.npz") in output
     assert not (tmp_path / "trained_item.featCLS").exists()
 
 
 def test_main_preserves_distinct_string_order_ids(monkeypatch, tmp_path, capsys):
     (tmp_path / "order_item.csv").write_text(
-        "order_id,dt,prod_id\n001,d1,A\n1,d1,B\n", encoding="utf-8"
+        "order_id,dt,prod_id\n001,20261001,A\n1,20261001,B\n", encoding="utf-8"
     )
     (tmp_path / "item2index.json").write_text(json.dumps({"A": 0, "B": 1}))
     (tmp_path / "index2item.json").write_text(json.dumps({"0": "A", "1": "B"}))
-    captured = {}
-    train_item2vec = training.train_item2vec
-
-    def capture_training(item2index, baskets, order_counts, **kwargs):
-        captured.update(baskets=baskets, order_counts=order_counts)
-        return train_item2vec(item2index, baskets, order_counts, **kwargs)
-
-    monkeypatch.setattr(training, "train_item2vec", capture_training)
-
-    with pytest.raises(RuntimeError, match="行为共现数据不足"):
+    from item2vec.preprocessing import preprocess_baskets
+    with pytest.raises(ValueError, match="no qualifying baskets"):
+        preprocess_baskets(tmp_path, tmp_path, tmp_path / "processed")
+    with pytest.raises(FileNotFoundError):
         training.main([str(tmp_path), str(tmp_path)])
-
-    assert captured["baskets"] == []
-    np.testing.assert_array_equal(captured["order_counts"], [1, 1])
-    assert "已读取 2 条行为，包含 2 个订单。" in capsys.readouterr().out
     assert not (tmp_path / "behavior_item.npz").exists()
 
 
@@ -420,7 +422,7 @@ def test_main_preserves_distinct_string_order_ids(monkeypatch, tmp_path, capsys)
     [
         ("order_id,dt,prod_id\n", ValueError, "empty"),
         ("dt,prod_id\nd1,A\nd1,B\n", ValueError, "order_id"),
-        ("order_id,dt,prod_id\no1,d1,A\no1,d1,B\n", RuntimeError, "行为共现数据不足"),
+        ("order_id,dt,prod_id\no1,20261001,A\no1,20261001,B\n", ValueError, "no qualifying baskets"),
     ],
 )
 def test_main_preserves_existing_artifact_when_production_data_is_insufficient(tmp_path, csv, exception, message):
@@ -430,7 +432,8 @@ def test_main_preserves_existing_artifact_when_production_data_is_insufficient(t
     existing = tmp_path / "behavior_item.npz"
     existing.write_bytes(b"old artifact")
 
+    from item2vec.preprocessing import preprocess_baskets
     with pytest.raises(exception, match=message):
-        training.main([str(tmp_path), str(tmp_path)])
+        preprocess_baskets(tmp_path, tmp_path, tmp_path / "processed")
 
     assert existing.read_bytes() == b"old artifact"

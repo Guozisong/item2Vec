@@ -22,13 +22,14 @@ def _write_stage(path, name, exit_code=0):
     )
 
 
-def _run_pipeline_with_stubs(tmp_path, generate_exit_code=0):
+def _run_pipeline_with_stubs(tmp_path, generate_exit_code=0, preprocess_exit_code=0):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     pipeline = scripts / "run_pipeline.sh"
     pipeline.write_text((SCRIPTS / "run_pipeline.sh").read_text())
     _write_stage(scripts / "fetch_data.sh", "fetch")
     _write_stage(scripts / "generate_embeddings.sh", "generate", generate_exit_code)
+    _write_stage(scripts / "preprocess_baskets.sh", "preprocess", preprocess_exit_code)
     _write_stage(scripts / "train.sh", "train")
     log = tmp_path / "pipeline.log"
     result = subprocess.run(
@@ -44,7 +45,7 @@ def test_run_pipeline_executes_stages_in_order(tmp_path):
     result, stages = _run_pipeline_with_stubs(tmp_path)
 
     assert result.returncode == 0
-    assert stages == ["fetch", "generate", "train"]
+    assert stages == ["fetch", "generate", "preprocess", "train"]
 
 
 def test_run_pipeline_stops_after_failed_middle_stage(tmp_path):
@@ -52,6 +53,13 @@ def test_run_pipeline_stops_after_failed_middle_stage(tmp_path):
 
     assert result.returncode == 17
     assert stages == ["fetch", "generate"]
+
+
+def test_run_pipeline_stops_after_failed_preprocessing(tmp_path):
+    result, stages = _run_pipeline_with_stubs(tmp_path, preprocess_exit_code=18)
+
+    assert result.returncode == 18
+    assert stages == ["fetch", "generate", "preprocess"]
 
 
 def test_gitignore_excludes_local_model_assets():
@@ -292,9 +300,10 @@ def _run_train_script_with_stub(tmp_path, arguments, environment=None):
         "from pathlib import Path\n"
         "Path(os.environ['TRAINING_ARGS_LOG']).write_text('\\n'.join(sys.argv[1:]))\n"
     )
-    raw_dir = tmp_path / "outputs" / "raw"
-    raw_dir.mkdir(parents=True)
-    (raw_dir / "order_item.csv").write_text("user_id,dt,prod_id\n")
+    processed_dir = tmp_path / "outputs" / "processed"
+    processed_dir.mkdir(parents=True)
+    for artifact in ("baskets.jsonl", "support.npz", "manifest.json"):
+        (processed_dir / artifact).write_bytes(b"stub")
     downstream_dir = tmp_path / "outputs" / "embeddings"
     downstream_dir.mkdir(parents=True)
     (downstream_dir / "item.feat1CLS").write_bytes(b"vectors")
@@ -315,12 +324,47 @@ def _run_train_script_with_stub(tmp_path, arguments, environment=None):
     return result, log.read_text().splitlines() if log.exists() else []
 
 
+def test_preprocess_script_passes_inputs_and_filter_parameters(tmp_path):
+    scripts_dir = tmp_path / 'scripts'
+    scripts_dir.mkdir()
+    script = scripts_dir / 'preprocess_baskets.sh'
+    script.write_text((SCRIPTS / 'preprocess_baskets.sh').read_text())
+    package_dir = tmp_path / 'src' / 'item2vec'
+    package_dir.mkdir(parents=True)
+    (package_dir / '__init__.py').write_text('')
+    (package_dir / 'preprocessing.py').write_text(
+        'import os, sys\nfrom pathlib import Path\n'
+        "Path(os.environ['PREPROCESS_ARGS_LOG']).write_text('\\n'.join(sys.argv[1:]))\n"
+    )
+    work_dir = tmp_path / 'custom'
+    raw = work_dir / 'raw'
+    raw.mkdir(parents=True)
+    (raw / 'order_item.csv').write_text('stub')
+    embeddings = work_dir / 'embeddings'
+    embeddings.mkdir()
+    (embeddings / 'item2index.json').write_text('{}')
+    (embeddings / 'index2item.json').write_text('{}')
+    log = tmp_path / 'preprocess.log'
+
+    result = subprocess.run(
+        ['/bin/bash', str(script), '30', '8', '--work-dir', str(work_dir)],
+        capture_output=True, text=True,
+        env={**os.environ, 'PREPROCESS_ARGS_LOG': str(log)},
+    )
+
+    assert result.returncode == 0
+    assert log.read_text().splitlines() == [
+        str(raw), str(embeddings), str(work_dir / 'processed'),
+        '--max-basket-size', '30', '--min-co-basket-orders', '8',
+    ]
+
+
 def test_train_script_forwards_default_parameters(tmp_path):
     result, arguments = _run_train_script_with_stub(tmp_path, [])
 
     assert result.returncode == 0
     assert arguments == [
-        str(tmp_path / "outputs" / "raw"), str(tmp_path / "outputs" / "embeddings"),
+        str(tmp_path / "outputs" / "processed"), str(tmp_path / "outputs" / "embeddings"),
         "--vector-size", "128", "--max-basket-size", "30", "--negative", "15",
         "--epochs", "10", "--min-order-count", "5",
     ]
@@ -331,7 +375,7 @@ def test_train_script_forwards_custom_parameters(tmp_path):
 
     assert result.returncode == 0
     assert arguments == [
-        str(tmp_path / "outputs" / "raw"), str(tmp_path / "outputs" / "embeddings"),
+        str(tmp_path / "outputs" / "processed"), str(tmp_path / "outputs" / "embeddings"),
         "--vector-size", "64", "--max-basket-size", "30", "--negative", "4",
         "--epochs", "6", "--min-order-count", "5",
     ]
@@ -403,9 +447,10 @@ def test_inference_scripts_use_custom_work_dir_after_positionals(tmp_path, scrip
 
 def test_train_script_uses_custom_work_dir_after_positionals(tmp_path):
     custom = tmp_path / "custom"
-    raw_dir = custom / "raw"
-    raw_dir.mkdir(parents=True)
-    (raw_dir / "order_item.csv").write_text("order_id,user_id,prod_id,dt\n")
+    processed_dir = custom / "processed"
+    processed_dir.mkdir(parents=True)
+    for artifact in ("baskets.jsonl", "support.npz", "manifest.json"):
+        (processed_dir / artifact).write_bytes(b"stub")
     embeddings = custom / "embeddings"
     embeddings.mkdir()
     (embeddings / "item2index.json").write_text("{}")
@@ -416,7 +461,7 @@ def test_train_script_uses_custom_work_dir_after_positionals(tmp_path):
     )
 
     assert result.returncode == 0
-    assert forwarded[:2] == [str(raw_dir), str(embeddings)]
+    assert forwarded[:2] == [str(processed_dir), str(embeddings)]
 
 
 @pytest.mark.parametrize(
@@ -550,6 +595,7 @@ def _run_pipeline_with_argument_logging(tmp_path, arguments):
     for filename, name in [
         ("fetch_data.sh", "fetch"),
         ("generate_embeddings.sh", "generate"),
+        ("preprocess_baskets.sh", "preprocess"),
         ("train.sh", "train"),
     ]:
         stage = scripts / filename
@@ -585,6 +631,7 @@ def test_run_pipeline_forwards_shared_and_stage_specific_paths(tmp_path):
     assert calls == [
         f"fetch --work-dir {work_dir} --env-file {env_file}",
         f"generate --work-dir {work_dir} --model-dir {model_dir}",
+        f"preprocess --work-dir {work_dir}",
         f"train --work-dir {work_dir}",
     ]
 

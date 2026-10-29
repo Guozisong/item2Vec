@@ -54,12 +54,14 @@ case "$#" in
         ;;
 esac
 
-raw_data_dir="${work_dir}/raw"
+processed_dir="${work_dir}/processed"
 embeddings_dir="${work_dir}/embeddings"
-if [[ ! -f "${raw_data_dir}/order_item.csv" ]]; then
-    echo "Missing order item CSV: ${raw_data_dir}/order_item.csv" >&2
-    exit 1
-fi
+for artifact in baskets.jsonl support.npz manifest.json; do
+    if [[ ! -f "${processed_dir}/${artifact}" ]]; then
+        echo "Missing processed basket artifact: ${processed_dir}/${artifact}; 请先运行 bash scripts/preprocess_baskets.sh" >&2
+        exit 1
+    fi
+done
 if [[ ! -f "${embeddings_dir}/item2index.json" || ! -f "${embeddings_dir}/index2item.json" ]]; then
     echo "Missing item index mappings in ${embeddings_dir}" >&2
     exit 1
@@ -68,7 +70,7 @@ fi
 mkdir -p "${embeddings_dir}"
 echo "工作目录：${work_dir}"
 cd "${repository_root}"
-python -m item2vec.training "${raw_data_dir}" "${embeddings_dir}" \
+python -m item2vec.training "${processed_dir}" "${embeddings_dir}" \
     --vector-size "${vector_size}" \
     --max-basket-size "${max_basket_size}" \
     --negative "${negative}" \

@@ -9,6 +9,8 @@ import numpy as np
 from tqdm import tqdm
 
 from item2vec.io import load_item_index, load_index_item
+from item2vec.preprocessing import load_processed_baskets
+from item2vec.scoring import compute_candidate_bias
 
 
 def build_basket_indexes(baskets, item2index):
@@ -78,6 +80,7 @@ def train_item2vec(
     epochs=10,
     min_order_count=5,
     workers=8,
+    ns_exponent=.5,
 ):
     for name, value in [('vector_size', vector_size), ('max_basket_size', max_basket_size),
                         ('negative', negative), ('epochs', epochs),
@@ -104,6 +107,7 @@ def train_item2vec(
         min_count=1,
         sg=1,
         negative=negative,
+        ns_exponent=ns_exponent,
         sample=0,
         workers=workers,
         epochs=epochs,
@@ -127,7 +131,8 @@ def train_item2vec(
     return vectors, model
 
 
-def write_behavior_embedding(embedding, index2item, order_counts, metadata, downstream_dir):
+def write_behavior_embedding(embedding, index2item, order_counts, metadata, downstream_dir,
+                             context_vectors=None):
     output_path = Path(downstream_dir) / 'behavior_item.npz'
     temporary_path = output_path.with_name('behavior_item.npz.tmp')
     item_ids = np.asarray([str(index2item[str(i)]) for i in range(len(index2item))])
@@ -135,8 +140,12 @@ def write_behavior_embedding(embedding, index2item, order_counts, metadata, down
     metadata_json = json.dumps(metadata, sort_keys=True)
     try:
         with tempfile.TemporaryFile() as stream:
-            np.savez(stream, vectors=np.asarray(embedding, dtype=np.float32), item_ids=item_ids,
-                     order_counts=counts, metadata=metadata_json)
+            arrays = {'vectors': np.asarray(embedding, dtype=np.float32),
+                      'item_ids': item_ids, 'order_counts': counts, 'metadata': metadata_json}
+            if context_vectors is not None:
+                arrays['context_vectors'] = np.asarray(context_vectors, dtype=np.float32)
+                arrays['candidate_bias'] = compute_candidate_bias(embedding, context_vectors)
+            np.savez(stream, **arrays)
             stream.seek(0)
             with np.load(stream, allow_pickle=False) as artifact:
                 required = {'vectors', 'item_ids', 'order_counts', 'metadata'}
@@ -151,6 +160,10 @@ def write_behavior_embedding(embedding, index2item, order_counts, metadata, down
                     raise ValueError('Behavior vector dimension must be positive')
                 if not np.isfinite(vectors).all():
                     raise ValueError('Behavior vectors must be finite')
+                if 'context_vectors' in artifact:
+                    context = artifact['context_vectors']
+                    if context.shape != vectors.shape or not np.isfinite(context).all():
+                        raise ValueError('Behavior context vectors must match vectors and be finite')
                 if not np.any(vectors):
                     raise ValueError('Behavior vector coverage must be nonzero')
                 saved_counts = _validate_order_counts(artifact['order_counts'], len(item_ids))
@@ -175,7 +188,7 @@ def write_behavior_embedding(embedding, index2item, order_counts, metadata, down
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('raw_data_dir')
+    parser.add_argument('processed_dir')
     parser.add_argument('downstream_dir')
     parser.add_argument('--vector-size', type=int, default=128)
     parser.add_argument('--max-basket-size', type=int, default=30)
@@ -184,22 +197,20 @@ def main(argv=None):
     parser.add_argument('--epochs', type=int, default=10)
     args = parser.parse_args(argv)
 
-    import pandas as pd
-
     item2index = load_item_index(args.downstream_dir)
     index2item = load_index_item(args.downstream_dir)
     if (set(index2item) != {str(i) for i in range(len(index2item))}
             or len({str(item) for item in index2item.values()}) != len(index2item)
             or item2index != {str(item): int(i) for i, item in index2item.items()}):
         raise ValueError('商品索引不一致，请重新生成商品索引。')
-    dataframe = pd.read_csv(
-        os.path.join(args.raw_data_dir, 'order_item.csv'), dtype={'order_id': str, 'prod_id': str}
+    basket_indexes, all_order_counts, valid_basket_counts, manifest = load_processed_baskets(
+        args.processed_dir, args.downstream_dir,
+        max_basket_size=args.max_basket_size,
+        min_co_basket_orders=args.min_order_count,
     )
-    basket_indexes, order_counts, stats = prepare_order_baskets(
-        dataframe, item2index, max_basket_size=args.max_basket_size
-    )
-    print(f'已读取 {len(dataframe)} 条行为，包含 {stats["orders"]} 个订单。')
-    print(f'已构建 {stats["valid_baskets"]} 个有效购物篮，排除 {stats["large_baskets"]} 个超大购物篮，'
+    stats = manifest['counts']
+    print(f'已读取 {stats["input_rows"]} 条行为，包含 {stats["orders"]} 个订单。')
+    print(f'已构建 {stats["final_baskets"]} 个有效购物篮，排除 {stats["large_baskets"]} 个超大购物篮，'
           f'商品目录共 {len(item2index)} 个商品。')
     metadata = {
         'vector_size': args.vector_size,
@@ -207,18 +218,26 @@ def main(argv=None):
         'negative': args.negative,
         'epochs': args.epochs,
         'min_order_count': args.min_order_count,
+        'ns_exponent': .5,
     }
-    trained_embedding, _model = train_item2vec(
+    trained_embedding, model = train_item2vec(
         item2index,
         basket_indexes,
-        order_counts,
+        valid_basket_counts,
         **metadata,
     )
+    context_vectors = None
+    if model is not None:
+        context_vectors = np.zeros_like(trained_embedding)
+        for row, key in enumerate(model.wv.index_to_key):
+            context_vectors[int(key)] = model.syn1neg[row]
     output_path = write_behavior_embedding(
-        trained_embedding, index2item, order_counts, metadata, args.downstream_dir
+        trained_embedding, index2item, all_order_counts, metadata, args.downstream_dir,
+        context_vectors=context_vectors,
     )
     covered = np.count_nonzero(np.any(trained_embedding != 0, axis=1))
-    print(f'行为向量覆盖 {covered} 个商品，其余 {len(item2index) - covered} 个商品回退到文本相似度。')
+    print(f'行为向量覆盖 {covered} 个商品，其余 {len(item2index) - covered} 个商品'
+          '在 similar/hybrid 中回退到文本相似度；complement 模式尝试行为迁移后回退文本。')
     print(f'行为向量已保存至：{output_path}')
 
 

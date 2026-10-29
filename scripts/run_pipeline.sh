@@ -52,4 +52,5 @@ fi
 
 bash "${repository_root}/scripts/fetch_data.sh" "${fetch_args[@]}"
 bash "${repository_root}/scripts/generate_embeddings.sh" "${embedding_args[@]}"
+bash "${repository_root}/scripts/preprocess_baskets.sh" --work-dir "${work_dir}"
 bash "${repository_root}/scripts/train.sh" "${train_args[@]}"

@@ -56,10 +56,48 @@ def test_no_eligible_behavior_stops_training():
         )
 
 
-@pytest.mark.parametrize('mode,expected', [('similar', .85), ('complement', .20), ('hybrid', .60)])
+@pytest.mark.parametrize('mode,expected', [('similar', .85), ('complement', 0.), ('hybrid', .60)])
 def test_resolve_text_weight_presets_and_override(mode, expected):
     assert inference.resolve_text_weight(mode, None) == expected
     assert inference.resolve_text_weight(mode, .37) == .37
+
+
+def test_complement_uses_item2vec_context_vectors_when_available():
+    mapping = {'0': 'A', '1': 'B', '2': 'C'}
+    behavior = np.array([[1., 0.], [.9, .1], [0., 1.]])
+    context = np.array([[1., 0.], [0., 1.], [2., 0.]])
+    kwargs = dict(behavior_vectors=behavior, behavior_order_counts=[5, 5, 5],
+                  recall_mode='complement', text_weight=0)
+
+    cosine = inference.rank_items(np.eye(3), mapping, [0], 2, **kwargs)
+    predicted = inference.rank_items(np.eye(3), mapping, [0], 2,
+                                     behavior_context_vectors=context, **kwargs)
+    default_weight = inference.rank_items(
+        np.eye(3), mapping, [0], 2, behavior_vectors=behavior,
+        behavior_context_vectors=context, behavior_order_counts=[5, 5, 5],
+        recall_mode='complement',
+    )
+
+    assert cosine.iloc[0].slave_prod_id == 'B'
+    assert predicted.iloc[0].slave_prod_id == 'C'
+    pd.testing.assert_frame_equal(predicted, default_weight)
+
+
+def test_context_scoring_is_block_invariant_and_requires_matching_shape():
+    mapping = {'0': 'A', '1': 'B', '2': 'C'}
+    behavior = np.array([[1., 0.], [.9, .1], [0., 1.]])
+    context = np.array([[1., 0.], [0., 1.], [2., 0.]])
+    kwargs = dict(behavior_vectors=behavior, behavior_context_vectors=context,
+                  behavior_order_counts=[5, 5, 5], recall_mode='complement',
+                  text_weight=0)
+
+    one = inference.rank_items(np.eye(3), mapping, range(3), 2, block_size=1, **kwargs)
+    many = inference.rank_items(np.eye(3), mapping, range(3), 2, block_size=3, **kwargs)
+    pd.testing.assert_frame_equal(one, many)
+    with pytest.raises(ValueError, match='behavior_context_vectors'):
+        inference.rank_items(np.eye(3), mapping, [0], 2,
+                             behavior_vectors=behavior, behavior_context_vectors=np.eye(3),
+                             behavior_order_counts=[5, 5, 5], recall_mode='complement')
 
 
 @pytest.mark.parametrize('weight', [None, .4])
@@ -91,6 +129,20 @@ def test_fusion_missing_behavior_uses_full_text_despite_high_counts(behavior):
         behavior_vectors=behavior, behavior_order_counts=[500, 500], text_weight=.2,
     )
     np.testing.assert_allclose(result.similarity, [.8, .8])
+
+
+def test_complement_ranking_ignores_order_confidence():
+    text = np.array([[1., 0.], [0., 1.], [1., 0.]])
+    inputs = np.array([[1., 0.], [0., 1.], [1., 0.]])
+    mapping = {'0': 'A', '1': 'B', '2': 'C'}
+    kwargs = dict(behavior_vectors=inputs, behavior_order_counts=[100, 1, 100], recall_mode='complement',
+                  text_weight=0)
+
+    low = inference.rank_items(text, mapping, [0], 2, full_confidence_orders=1, **kwargs)
+    high = inference.rank_items(text, mapping, [0], 2, full_confidence_orders=1000, **kwargs)
+
+    pd.testing.assert_frame_equal(low, high)
+    assert low.slave_prod_id.tolist() == ['C', 'B']
 
 
 @pytest.mark.parametrize('threshold', [0, -1, 50., True, np.bool_(True), '50', None])

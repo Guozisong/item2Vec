@@ -108,6 +108,42 @@ def test_rank_items_is_equivalent_across_block_sizes():
     pd.testing.assert_frame_equal(actual, expected)
 
 
+def test_complement_uses_behavior_cosine_and_excludes_cold_candidates():
+    text = np.array([[1., 0.], [0., 1.], [.8, .6], [1., 0.]])
+    inputs = np.array([[1., 0.], [0., 1.], [1., 0.], [0., 0.]])
+    mapping = {str(i): item for i, item in enumerate('ABCD')}
+
+    result = inference.rank_items(
+        text, mapping, [0], 3, recall_mode='complement', text_weight=.1,
+        behavior_vectors=inputs, behavior_order_counts=[100, 100, 100, 0],
+    )
+
+    assert result.slave_prod_id.tolist() == ['C', 'B']
+
+
+def test_score_percentiles_give_equal_values_to_ties():
+    np.testing.assert_array_equal(
+        inference._score_percentiles(np.array([3., 1., 3.])),
+        [1., 0., 1.],
+    )
+
+
+def test_complement_is_block_invariant_and_falls_back_for_cold_sources():
+    text = np.array([[1., 0.], [0., 1.], [1., 1.], [1., 0.]])
+    inputs = np.array([[1., 0.], [0., 1.], [1., 1.], [0., 0.]])
+    mapping = {str(i): item for i, item in enumerate('ABCD')}
+    kwargs = dict(behavior_vectors=inputs, behavior_order_counts=[20, 20, 20, 0],
+                  recall_mode='complement')
+
+    small = inference.rank_items(text, mapping, range(4), 2, block_size=1, **kwargs)
+    large = inference.rank_items(text, mapping, range(4), 2, block_size=4, **kwargs)
+
+    pd.testing.assert_frame_equal(small, large)
+    assert set(small.master_prod_id) == {'A', 'B', 'C', 'D'}
+    assert set(small[small.master_prod_id == 'D'].recall_source) == {'text_fallback'}
+    assert 'D' not in set(small.slave_prod_id)
+
+
 def test_normalization_preserves_float32_dtype():
     from item2vec.inference import _normalize_vectors
 
@@ -140,12 +176,39 @@ def test_load_trained_artifacts_reads_vectors_and_mapping(tmp_path):
     vectors[1, 1] = 1.0
     _write_artifacts(tmp_path, ["A", "B"], vectors)
 
-    actual_vectors, actual_mapping, behavior_vectors, order_counts = inference.load_trained_artifacts(tmp_path)
+    actual_vectors, actual_mapping, behavior_vectors, order_counts, context_vectors, bias = inference.load_trained_artifacts(tmp_path)
 
     np.testing.assert_array_equal(actual_vectors, vectors)
     assert actual_mapping == {"0": "A", "1": "B"}
     assert behavior_vectors.shape == (2, 3)
     np.testing.assert_array_equal(order_counts, [0, 1])
+    assert context_vectors is None
+    assert bias is None
+
+
+def test_load_trained_artifacts_reads_context_vectors(tmp_path):
+    _write_artifacts(tmp_path, ['A', 'B'])
+    path = tmp_path / 'behavior_item.npz'
+    with np.load(path, allow_pickle=False) as artifact:
+        fields = {key: artifact[key] for key in artifact.files}
+    fields['context_vectors'] = np.ones_like(fields['vectors'])
+    np.savez(path, **fields)
+
+    *_, context, bias = inference.load_trained_artifacts(tmp_path)
+
+    np.testing.assert_array_equal(context, fields['context_vectors'])
+
+
+def test_complement_query_excludes_cold_candidates_with_existing_artifact(tmp_path):
+    text = np.zeros((3, 768), dtype=np.float32)
+    text[:, :2] = [[1., 0.], [0., 1.], [1., 0.]]
+    _write_artifacts(tmp_path, ['A', 'B', 'C'], text)
+    np.savez(tmp_path / 'behavior_item.npz', vectors=np.array([[1., 0.], [0., 1.], [0., 0.]]),
+             item_ids=np.array(['A', 'B', 'C']), order_counts=np.array([100, 100, 0]))
+
+    path = inference.query_item(tmp_path, 'A', top_k=2, recall_mode='complement')
+
+    assert pd.read_csv(path).slave_prod_id.tolist() == ['B']
 
 
 @pytest.mark.parametrize("missing_name", ["item.feat1CLS", "index2item.json", "behavior_item.npz"])
@@ -245,7 +308,7 @@ def test_export_all_writes_complement_output_and_forwards_scoring_options(monkey
     output_path = inference.export_all(tmp_path, top_k=1, recall_mode="complement")
 
     assert output_path == tmp_path / "item_similarity_complement.csv"
-    assert captured["text_weight"] == 0.20
+    assert captured["text_weight"] == 0.
     assert captured["full_confidence_orders"] == 50
     assert list(pd.read_csv(output_path).columns) == COLUMNS
 
@@ -263,7 +326,7 @@ def test_query_item_keeps_legacy_filename_and_forwards_recall_mode(monkeypatch, 
     output_path = inference.query_item(tmp_path, "A", top_k=1, recall_mode="complement")
 
     assert output_path == tmp_path / "query_A.csv"
-    assert captured["text_weight"] == 0.20
+    assert captured["text_weight"] == 0.
     assert captured["full_confidence_orders"] == 50
 
 
@@ -421,7 +484,7 @@ def test_main_forwards_recall_options(monkeypatch, command, options, expected):
 
 
 @pytest.mark.parametrize('command', ['query', 'export'])
-@pytest.mark.parametrize('mode,weight,expected', [('similar', None, .985), ('complement', None, .92), ('hybrid', None, .96), ('similar', .3, .93)])
+@pytest.mark.parametrize('mode,weight,expected', [('similar', None, .985), ('hybrid', None, .96), ('similar', .3, .93)])
 def test_query_and_export_apply_recall_mode_and_confidence(tmp_path, command, mode, weight, expected):
     text = np.zeros((2, 768), dtype=np.float32)
     text[:, 0] = 1.
@@ -437,7 +500,7 @@ def test_query_and_export_apply_recall_mode_and_confidence(tmp_path, command, mo
 
 
 @pytest.mark.parametrize('command', ['query', 'export'])
-@pytest.mark.parametrize('weight,expected_weights', [(None, '文本权重：0.2，行为权重：0.8'), (.35, '文本权重：0.35，行为权重：0.65')])
+@pytest.mark.parametrize('weight,expected_weights', [(None, '文本权重：0，行为权重：1'), (.35, '文本权重：0.35，行为权重：0.65')])
 def test_query_and_export_log_selected_mode_and_resolved_weights(tmp_path, capsys, command, weight, expected_weights):
     _write_artifacts(tmp_path, ['A', 'B'])
     kwargs = dict(top_k=1, recall_mode='complement', text_weight=weight, full_confidence_orders=100)
@@ -446,7 +509,7 @@ def test_query_and_export_log_selected_mode_and_resolved_weights(tmp_path, capsy
     else:
         inference.export_all(tmp_path, **kwargs)
     assert capsys.readouterr().out.splitlines()[0] == (
-        f'召回模式：complement，{expected_weights}，满置信订单数：100'
+        f'召回模式：complement，{expected_weights}（百分位排名），自身行为→行为迁移→文本回退'
     )
 
 
