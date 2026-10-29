@@ -292,12 +292,12 @@ bash scripts/generate_embeddings.sh --work-dir "$WORK_DIR"
 bash scripts/preprocess_baskets.sh 30 5 --work-dir "$WORK_DIR"
 ```
 
-两个位置参数依次为最大篮大小和商品在有效多商品篮中的最低订单数，默认 `30`、`5`。命名参数 `--min-basket-size N` 控制最小篮大小，默认 `2`，必须为不小于2且不大于最大篮大小的整数；原有位置参数含义保持不变。
+三个位置参数依次为最大篮大小、商品在有效多商品篮中的最低订单数、最小篮大小，默认 `30`、`5`、`2`。最小篮大小必须为不小于2且不大于最大篮大小的整数。仍兼容命名参数 `--min-basket-size N`，但不能与第三个位置参数同时使用；原有只传两个位置参数的命令仍使用最小篮大小2。
 
 例如只保留3至30件商品的购物篮：
 
 ```bash
-bash scripts/preprocess_baskets.sh 30 5 --min-basket-size 3 --work-dir "$WORK_DIR"
+bash scripts/preprocess_baskets.sh 30 5 3 --work-dir "$WORK_DIR"
 ```
 
 下限按去重、排除目录外商品后的商品数判断，并在移除低频商品后再次检查。`manifest.json` 的 `parameters.min_basket_size` 记录该值；`counts.small_baskets` 统计首次过滤中低于下限的篮数（包括空篮和单商品篮），`dropped_after_support` 统计移除低频商品后低于下限的篮数。训练自动读取清单中的下限并记录到行为产物元数据，无需给 `train.sh` 重复传入；旧清单没有该字段时按2处理。

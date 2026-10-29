@@ -327,8 +327,8 @@ def _run_train_script_with_stub(tmp_path, arguments, environment=None):
     return result, log.read_text().splitlines() if log.exists() else []
 
 
-@pytest.mark.parametrize('minimum', [None, '3'])
-def test_preprocess_script_passes_inputs_and_filter_parameters(tmp_path, minimum):
+@pytest.mark.parametrize('minimum_args,minimum', [([], '2'), (['--min-basket-size', '3'], '3'), (['3'], '3')])
+def test_preprocess_script_passes_inputs_and_filter_parameters(tmp_path, minimum_args, minimum):
     scripts_dir = tmp_path / 'scripts'
     scripts_dir.mkdir()
     script = scripts_dir / 'preprocess_baskets.sh'
@@ -351,8 +351,7 @@ def test_preprocess_script_passes_inputs_and_filter_parameters(tmp_path, minimum
     log = tmp_path / 'preprocess.log'
 
     result = subprocess.run(
-        ['/bin/bash', str(script), '30', '8', '--work-dir', str(work_dir),
-         *(['--min-basket-size', minimum] if minimum else [])],
+        ['/bin/bash', str(script), '30', '8', *minimum_args, '--work-dir', str(work_dir)],
         capture_output=True, text=True,
         env={**os.environ, 'PREPROCESS_ARGS_LOG': str(log)},
     )
@@ -360,7 +359,7 @@ def test_preprocess_script_passes_inputs_and_filter_parameters(tmp_path, minimum
     assert result.returncode == 0
     assert log.read_text().splitlines() == [
         str(raw), str(embeddings), str(work_dir / 'processed'),
-        '--max-basket-size', '30', '--min-basket-size', minimum or '2',
+        '--max-basket-size', '30', '--min-basket-size', minimum,
         '--min-co-basket-orders', '8',
     ]
 
@@ -692,6 +691,16 @@ def test_pipeline_forwards_minimum_only_to_preprocessing(tmp_path):
     ['--min-basket-size', '3', '--min-basket-size', '4']])
 def test_scripts_reject_missing_or_repeated_minimum(script, arguments):
     result = subprocess.run(['/bin/bash', str(SCRIPTS / script), *arguments],
+                            text=True, capture_output=True)
+    assert result.returncode != 0
+    assert 'Usage:' in result.stderr
+
+
+@pytest.mark.parametrize('arguments', [['30', '5', '3', '4'],
+    ['30', '5', '3', '--min-basket-size', '4'],
+    ['--min-basket-size', '3', '30', '5', '3']])
+def test_preprocess_rejects_extra_or_conflicting_positional_minimum(arguments):
+    result = subprocess.run(['/bin/bash', str(SCRIPTS / 'preprocess_baskets.sh'), *arguments],
                             text=True, capture_output=True)
     assert result.returncode != 0
     assert 'Usage:' in result.stderr
