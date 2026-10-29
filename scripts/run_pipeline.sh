@@ -8,13 +8,19 @@ model_dir=
 work_dir_set=
 env_file_set=
 model_dir_set=
+source_args=()
 
 usage() {
-    echo "Usage: $0 [--work-dir DIR] [--env-file FILE] [--model-dir DIR]" >&2
+    echo "Usage: $0 --item-input-{csv|table|query-file} SOURCE --order-input-{csv|table|query-file} SOURCE [--work-dir DIR] [--env-file FILE] [--model-dir DIR]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --item-input-csv|--item-input-table|--item-input-query-file|--order-input-csv|--order-input-table|--order-input-query-file)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { usage; exit 2; }
+            source_args+=("$1" "$2")
+            shift 2
+            ;;
         --work-dir)
             [[ $# -ge 2 && -n "$2" && "$2" != --* && -z "${work_dir_set}" ]] || { usage; exit 2; }
             work_dir="$2"
@@ -41,6 +47,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 fetch_args=(--work-dir "${work_dir}")
+if [[ ${#source_args[@]} -gt 0 ]]; then
+    fetch_args+=("${source_args[@]}")
+fi
 embedding_args=(--work-dir "${work_dir}")
 train_args=(--work-dir "${work_dir}")
 if [[ -n "${env_file}" ]]; then

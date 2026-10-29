@@ -93,9 +93,11 @@ def test_fetch_data_uses_default_endpoint_when_environment_value_is_blank(monkey
     monkeypatch.setitem(sys.modules, 'odps', types.SimpleNamespace(ODPS=FakeODPS))
     monkeypatch.setenv('ALI_PROJECT', 'test-project')
     monkeypatch.setenv('ALI_ENDPOINT', '')
+    monkeypatch.delenv('endpoint', raising=False)
+    monkeypatch.setenv('ALI_ACCESS_ID', 'id')
+    monkeypatch.setenv('ALI_SECRET_ACCESS_KEY', 'key')
 
-    with pytest.raises(AssertionError, match='ODPS query'):
-        data_fetch.fetch_data(tmp_path, 'id', 'key')
+    data_fetch.connect_odps()
 
     assert captured['endpoint'] == data_fetch.DEFAULT_ENDPOINT
 
@@ -104,10 +106,11 @@ def test_data_fetch_main_rejects_missing_project_before_fetch(monkeypatch, tmp_p
     monkeypatch.setenv('ALI_ACCESS_ID', 'id')
     monkeypatch.setenv('ALI_SECRET_ACCESS_KEY', 'key')
     monkeypatch.delenv('ALI_PROJECT', raising=False)
+    monkeypatch.delenv('project', raising=False)
     monkeypatch.setattr(data_fetch, 'fetch_data', lambda *args: pytest.fail('fetch must not run'))
 
     with pytest.raises(RuntimeError, match='Missing ODPS credentials'):
-        data_fetch.main([str(tmp_path)])
+        data_fetch.connect_odps()
 
 
 def _run_inference_script_with_stub(tmp_path, script_name, arguments, environment=None):
@@ -545,12 +548,42 @@ def test_fetch_script_uses_custom_work_dir_and_env_file(tmp_path):
     env_file.write_text("ALI_ACCESS_ID=id\nALI_SECRET_ACCESS_KEY=key\nALI_PROJECT=project\n")
 
     result, forwarded = _run_fetch_script_with_stub(
-        tmp_path, ["--work-dir", str(custom), "--env-file", str(env_file)]
+        tmp_path, ["--work-dir", str(custom), "--env-file", str(env_file),
+                   "--item-input-table", "catalog", "--order-input-table", "orders"]
     )
 
     assert result.returncode == 0
-    assert forwarded == [str(custom / "raw")]
+    assert forwarded == [str(custom / "raw"), '--item-input-table', 'catalog',
+                         '--order-input-table', 'orders']
     assert (custom / "raw").is_dir()
+
+
+def test_fetch_csv_sources_do_not_require_env_file(tmp_path):
+    arguments = ['--item-input-csv', str(tmp_path / 'items.csv'),
+                 '--order-input-csv', str(tmp_path / 'orders.csv'),
+                 '--env-file', str(tmp_path / 'missing.env')]
+    result, forwarded = _run_fetch_script_with_stub(tmp_path, arguments)
+    assert result.returncode == 0
+    assert forwarded == [str(tmp_path / 'outputs/raw'), *arguments[:4]]
+
+
+def test_fetch_odps_accepts_lowercase_env_file(tmp_path):
+    env_file = tmp_path / 'lower.env'
+    env_file.write_text('access_id=id\naccess_key=key\nproject=p\nendpoint=https://example.test\n')
+    result, forwarded = _run_fetch_script_with_stub(
+        tmp_path, ['--item-input-table', 'catalog', '--order-input-table', 'orders',
+                   '--env-file', str(env_file)])
+    assert result.returncode == 0
+    assert forwarded[-4:] == ['--item-input-table', 'catalog', '--order-input-table', 'orders']
+
+
+@pytest.mark.parametrize('arguments', [[], ['--item-input-table', 'items'],
+    ['--item-input-table', 'items', '--item-input-csv', 'items.csv', '--order-input-table', 'orders']])
+def test_fetch_rejects_missing_or_conflicting_sources(tmp_path, arguments):
+    result, forwarded = _run_fetch_script_with_stub(tmp_path, arguments)
+    assert result.returncode != 0
+    assert 'Usage:' in result.stderr
+    assert forwarded == []
 
 
 def test_embedding_script_uses_custom_work_dir_and_model_dir(tmp_path):
@@ -634,6 +667,14 @@ def test_run_pipeline_forwards_shared_and_stage_specific_paths(tmp_path):
         f"preprocess --work-dir {work_dir}",
         f"train --work-dir {work_dir}",
     ]
+
+
+def test_pipeline_forwards_sources_only_to_fetch_stage(tmp_path):
+    result, calls = _run_pipeline_with_argument_logging(
+        tmp_path, ['--item-input-csv', 'items.csv', '--order-input-query-file', 'orders.sql'])
+    assert result.returncode == 0
+    assert calls[0].endswith('--item-input-csv items.csv --order-input-query-file orders.sql')
+    assert all('--item-input' not in call and '--order-input' not in call for call in calls[1:])
 
 
 @pytest.mark.parametrize(

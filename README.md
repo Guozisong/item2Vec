@@ -19,7 +19,7 @@ bash scripts/query_similar.sh ITEM_ID 50 complement 0 --work-dir "$WORK_DIR"
 ## 项目结构
 
 ```text
-scripts/fetch_data.sh              从 ODPS 获取商品与订单数据
+scripts/fetch_data.sh              从 CSV、ODPS 表或 SQL 文件准备商品与订单数据
 scripts/generate_embeddings.sh     生成商品文本向量和商品索引
 scripts/preprocess_baskets.sh      清洗购物篮并发布训练集
 scripts/train.sh                   训练 Item2Vec 行为向量
@@ -27,7 +27,7 @@ scripts/query_similar.sh           查询单个商品的相似商品
 scripts/export_similarities.sh     批量导出所有商品的相似结果
 scripts/evaluate_item2vec.py       按时间切分订单并离线评估共购召回
 scripts/run_pipeline.sh            依次执行取数、文本向量生成、购物篮处理和行为训练
-src/item2vec/data_fetch.py         ODPS 查询与 CSV 导出
+src/item2vec/data_fetch.py         数据源读取、字段标准化与 CSV 发布
 src/item2vec/embedding.py          M3E/BERT 文本向量生成
 src/item2vec/preprocessing.py      购物篮清洗与训练集校验
 src/item2vec/training.py           Item2Vec 训练
@@ -94,7 +94,7 @@ ALI_PROJECT=your_project
 ALI_ENDPOINT=https://your-maxcompute-endpoint/api
 ```
 
-前三项必填。`ALI_ENDPOINT` 可选，省略时使用代码中的杭州 VPC 默认地址。凭据、原始 CSV、模型文件和下游产物均为本地运行资产，不应提交到版本库。
+ODPS 模式下前三项必填。`ALI_ENDPOINT` 可选，省略时使用代码中的杭州 VPC 默认地址。纯 CSV 模式无需凭据文件。也支持小写配置 `access_id,access_key,project,endpoint`，非空大写配置优先。凭据、原始 CSV、模型文件和下游产物均为本地运行资产，不应提交到版本库。
 
 所有阶段使用同一个 `--work-dir` 作为产物根目录。省略时默认使用项目内的 `outputs/`：
 
@@ -121,17 +121,20 @@ ODPS 配置和文本模型属于外部输入，不写入工作目录。可分别
 
 ## 完整流程
 
-执行完整训练流水线：
+执行完整训练流水线，商品和订单分别选择一个输入源：
 
 ```bash
 WORK_DIR=/path/to/output
-bash scripts/run_pipeline.sh --work-dir "$WORK_DIR"
+bash scripts/run_pipeline.sh --item-input-csv /path/to/items.csv \
+  --order-input-csv /path/to/orders.csv --work-dir "$WORK_DIR"
 ```
 
 如果 ODPS 配置和文本模型也使用挂载目录：
 
 ```bash
 bash scripts/run_pipeline.sh \
+  --item-input-query-file /path/to/items.sql \
+  --order-input-query-file /path/to/orders.sql \
   --work-dir "$WORK_DIR" \
   --env-file /path/to/mounted/.env \
   --model-dir /path/to/mounted/m3e-base
@@ -157,7 +160,8 @@ bash scripts/query_similar.sh ITEM_ID 10 complement 0 --work-dir "$WORK_DIR"
 
 ```bash
 mkdir -p "$WORK_DIR/logs"
-nohup bash scripts/run_pipeline.sh --work-dir "$WORK_DIR" \
+nohup bash scripts/run_pipeline.sh --item-input-table your_catalog_table \
+  --order-input-query-file /path/to/orders.sql --work-dir "$WORK_DIR" \
   > "$WORK_DIR/logs/pipeline.out" 2>&1 &
 echo $!
 ```
@@ -214,12 +218,22 @@ cd "$PROJECT_DIR"
 
 选项可以放在位置参数之前或之后。未知选项、重复选项或缺少选项值会直接报错。
 
-### 1. fetch_data：从 ODPS 获取数据
+### 1. fetch_data：准备商品与订单 CSV
 
 #### 执行命令
 
 ```bash
-bash scripts/fetch_data.sh --work-dir "$WORK_DIR"
+# 纯 CSV：不读取 .env 或连接 ODPS
+bash scripts/fetch_data.sh --item-input-csv /path/to/items.csv \
+  --order-input-csv /path/to/orders.csv --work-dir "$WORK_DIR"
+
+# ODPS 表：读取全部行
+bash scripts/fetch_data.sh --item-input-table your_catalog_table \
+  --order-input-table your_order_table --env-file /path/to/.env --work-dir "$WORK_DIR"
+
+# SQL 文件：自行控制日期窗口、商品池和列别名
+bash scripts/fetch_data.sh --item-input-query-file /path/to/items.sql \
+  --order-input-query-file /path/to/orders.sql --env-file /path/to/.env --work-dir "$WORK_DIR"
 ```
 
 #### 配置与输出
@@ -231,9 +245,26 @@ bash scripts/fetch_data.sh --work-dir "$WORK_DIR"
 | `ALI_PROJECT` | 是 | 无 | ODPS Project |
 | `ALI_ENDPOINT` | 否 | 杭州 VPC Endpoint | ODPS 服务地址 |
 
-脚本默认读取 `dataset/raw/.env`，可用 `--env-file FILE` 覆盖。它查询最近 30 个日历日的订单数据，并输出 `<work-dir>/raw/item.csv` 和 `<work-dir>/raw/order_item.csv`。
+参考 Unisrec_1，商品和订单分别从 CSV、ODPS 表、SQL 文件中三选一，两路可以混用。无参数时会报错，不再执行固定表或自动限制近30天。完整流水线也接受以下六个参数，仅传给取数阶段。
 
-日期范围设置在 `src/item2vec/data_fetch.py` 的 `ORDER_ITEM_SQL`：`dateadd(getdate(), -29, 'dd')` 包含今天共30天。如需近90天，可将 `-29` 改为 `-89`。本次本地全量模型使用用户提供的2026-07-30至2026-10-28共91天订单；该文件范围与取数脚本默认范围不同。
+| 数据 | 三选一的来源参数 | 输入字段 | 输出 |
+| --- | --- | --- | --- |
+| 商品 | `--item-input-csv` / `--item-input-table` / `--item-input-query-file` | `prod_id,prod_description` | `<work-dir>/raw/item.csv` |
+| 订单 | `--order-input-csv` / `--order-input-table` / `--order-input-query-file` | `order_id,prod_id,dt`；可带 `user_id` | `<work-dir>/raw/order_item.csv` |
+
+允许额外列和任意列顺序，输出统一字段顺序并移除额外列。CSV 编码按字符串读取，保留前导零。`dt` 应为 `YYYYMMDD`，日期由后续预处理校验。订单必须有真实 `order_id`；Unisrec_1 的用户交互五字段不能直接替代购物篮订单。两份来源均通过字段和非空校验后，才逐个原子替换目标 CSV；校验失败保留旧文件。
+
+ODPS 模式默认读取 `dataset/raw/.env`，可用 `--env-file FILE` 覆盖。兼容小写配置 `access_id,access_key,project,endpoint`，与上表四项依次对应；非空大写配置优先。纯 CSV 模式忽略凭据文件。表输入不附加日期或商品池过滤；需要原商品池过滤时，明确在商品 SQL 中使用 `lh_rec_gds_station_base_pool_tmp` 条件。
+
+例如近90天订单的 `orders.sql` 可写为：
+
+```sql
+SELECT order_id, user_id, prod_id, dt
+FROM unisrec_raw_data
+WHERE dt >= to_char(dateadd(getdate(), -89, 'dd'), 'yyyymmdd');
+```
+
+SQL 文件按原文执行。需要全量时使用表输入或移除日期条件。已有配套 `raw/` 文件时，可跳过取数，从预处理继续执行。
 
 ### 2. generate_embeddings：生成商品文本向量
 
