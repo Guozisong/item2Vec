@@ -327,7 +327,8 @@ def _run_train_script_with_stub(tmp_path, arguments, environment=None):
     return result, log.read_text().splitlines() if log.exists() else []
 
 
-def test_preprocess_script_passes_inputs_and_filter_parameters(tmp_path):
+@pytest.mark.parametrize('minimum', [None, '3'])
+def test_preprocess_script_passes_inputs_and_filter_parameters(tmp_path, minimum):
     scripts_dir = tmp_path / 'scripts'
     scripts_dir.mkdir()
     script = scripts_dir / 'preprocess_baskets.sh'
@@ -350,7 +351,8 @@ def test_preprocess_script_passes_inputs_and_filter_parameters(tmp_path):
     log = tmp_path / 'preprocess.log'
 
     result = subprocess.run(
-        ['/bin/bash', str(script), '30', '8', '--work-dir', str(work_dir)],
+        ['/bin/bash', str(script), '30', '8', '--work-dir', str(work_dir),
+         *(['--min-basket-size', minimum] if minimum else [])],
         capture_output=True, text=True,
         env={**os.environ, 'PREPROCESS_ARGS_LOG': str(log)},
     )
@@ -358,7 +360,8 @@ def test_preprocess_script_passes_inputs_and_filter_parameters(tmp_path):
     assert result.returncode == 0
     assert log.read_text().splitlines() == [
         str(raw), str(embeddings), str(work_dir / 'processed'),
-        '--max-basket-size', '30', '--min-co-basket-orders', '8',
+        '--max-basket-size', '30', '--min-basket-size', minimum or '2',
+        '--min-co-basket-orders', '8',
     ]
 
 
@@ -675,6 +678,23 @@ def test_pipeline_forwards_sources_only_to_fetch_stage(tmp_path):
     assert result.returncode == 0
     assert calls[0].endswith('--item-input-csv items.csv --order-input-query-file orders.sql')
     assert all('--item-input' not in call and '--order-input' not in call for call in calls[1:])
+
+
+def test_pipeline_forwards_minimum_only_to_preprocessing(tmp_path):
+    result, calls = _run_pipeline_with_argument_logging(tmp_path, ['--min-basket-size', '3'])
+    assert result.returncode == 0
+    assert calls[2].endswith('--min-basket-size 3')
+    assert all('--min-basket-size' not in calls[i] for i in (0, 1, 3))
+
+
+@pytest.mark.parametrize('script', ['preprocess_baskets.sh', 'run_pipeline.sh'])
+@pytest.mark.parametrize('arguments', [['--min-basket-size'],
+    ['--min-basket-size', '3', '--min-basket-size', '4']])
+def test_scripts_reject_missing_or_repeated_minimum(script, arguments):
+    result = subprocess.run(['/bin/bash', str(SCRIPTS / script), *arguments],
+                            text=True, capture_output=True)
+    assert result.returncode != 0
+    assert 'Usage:' in result.stderr
 
 
 @pytest.mark.parametrize(

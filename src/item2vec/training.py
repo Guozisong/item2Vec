@@ -231,6 +231,7 @@ def main(argv=None):
         context_vectors = np.zeros_like(trained_embedding)
         for row, key in enumerate(model.wv.index_to_key):
             context_vectors[int(key)] = model.syn1neg[row]
+    metadata['min_basket_size'] = manifest['parameters'].get('min_basket_size', 2)
     output_path = write_behavior_embedding(
         trained_embedding, index2item, all_order_counts, metadata, args.downstream_dir,
         context_vectors=context_vectors,

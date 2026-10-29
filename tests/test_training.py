@@ -391,6 +391,7 @@ def test_main_trains_behavior_only_and_preserves_string_product_ids(monkeypatch,
         assert json.loads(artifact["metadata"].item()) == {
             "vector_size": 4, "max_basket_size": 9, "negative": 3, "epochs": 7, "min_order_count": 2,
             "ns_exponent": .5,
+            "min_basket_size": 2,
         }
     output = capsys.readouterr().out
     assert "已读取 5 条行为，包含 3 个订单。" in output

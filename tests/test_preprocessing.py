@@ -69,6 +69,49 @@ def test_preprocess_drops_large_and_empty_catalog_baskets(tmp_path):
     assert report['final_baskets'] == 1
 
 
+def test_minimum_applies_after_dedup_and_after_support_filter(tmp_path):
+    rows = [(order, item, '20261001') for order in ('one', 'two') for item in 'ABC']
+    rows += [('rare', item, '20261001') for item in 'ABD']
+    rows += [('small', item, '20261001') for item in ('A', 'B', 'B', 'outside')]
+    raw, embeddings, processed = _fixture(tmp_path, rows)
+    report = preprocess_baskets(raw, embeddings, processed, max_basket_size=3,
+                                min_co_basket_orders=2, min_basket_size=3)
+    baskets, all_counts, support, manifest = load_processed_baskets(processed, embeddings)
+    assert baskets == [['0', '1', '2'], ['0', '1', '2']]
+    np.testing.assert_array_equal(all_counts, [4, 4, 2, 1])
+    np.testing.assert_array_equal(support, [3, 3, 2, 1])
+    assert manifest['parameters']['min_basket_size'] == 3
+    assert report['small_baskets'] == 1
+    assert report['initial_valid_baskets'] == 3
+    assert report['dropped_after_support'] == 1
+    assert report['final_baskets'] == 2
+
+
+@pytest.mark.parametrize('minimum', [0, 1, -1, 4, True, 2.5])
+def test_invalid_minimum_rejected(tmp_path, minimum):
+    raw, embeddings, processed = _fixture(tmp_path, [('one', 'A', '20261001')])
+    with pytest.raises(ValueError, match='min_basket_size'):
+        preprocess_baskets(raw, embeddings, processed, max_basket_size=3,
+                           min_basket_size=minimum)
+    assert not processed.exists()
+
+
+def test_loader_accepts_legacy_minimum_and_rejects_below_manifest_minimum(tmp_path):
+    raw, embeddings, processed = _fixture(tmp_path, [
+        ('one', 'A', '20261001'), ('one', 'B', '20261001'),
+    ])
+    preprocess_baskets(raw, embeddings, processed, min_co_basket_orders=1)
+    path = processed / 'manifest.json'
+    manifest = json.loads(path.read_text())
+    del manifest['parameters']['min_basket_size']
+    path.write_text(json.dumps(manifest))
+    assert load_processed_baskets(processed, embeddings)[0] == [['0', '1']]
+    manifest['parameters']['min_basket_size'] = 3
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='invalid items'):
+        load_processed_baskets(processed, embeddings)
+
+
 def test_processed_baskets_reject_changed_orders_or_index(tmp_path):
     raw, embeddings, processed = _fixture(tmp_path, [
         ('one', 'A', '20261001'), ('one', 'B', '20261001'),

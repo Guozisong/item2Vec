@@ -31,7 +31,12 @@ def _item_ids(embeddings_dir):
 
 
 def preprocess_baskets(raw_dir, embeddings_dir, processed_dir, max_basket_size=30,
-                       min_co_basket_orders=5):
+                       min_co_basket_orders=5, min_basket_size=2):
+    if (isinstance(min_basket_size, bool)
+            or not isinstance(min_basket_size, (int, np.integer))
+            or not 2 <= min_basket_size <= max_basket_size):
+        raise ValueError('min_basket_size must be an integer between 2 and max_basket_size')
+    min_basket_size = int(min_basket_size)
     if max_basket_size < 2 or min_co_basket_orders < 1:
         raise ValueError('max_basket_size must be >= 2 and min_co_basket_orders >= 1')
     raw_dir = Path(raw_dir)
@@ -55,7 +60,7 @@ def preprocess_baskets(raw_dir, embeddings_dir, processed_dir, max_basket_size=3
     counts = dict(input_rows=len(rows), orders=0, duplicate_product_rows=0,
                   unknown_product_rows=0, cross_date_orders=0,
                   zero_known_baskets=0, single_known_baskets=0,
-                  initial_valid_baskets=0, large_baskets=0,
+                  initial_valid_baskets=0, large_baskets=0, small_baskets=0,
                   dropped_after_support=0, final_baskets=0)
     all_order_counts = np.zeros(len(item_ids), dtype=np.int64)
     valid_basket_counts = np.zeros(len(item_ids), dtype=np.int64)
@@ -75,6 +80,8 @@ def preprocess_baskets(raw_dir, embeddings_dir, processed_dir, max_basket_size=3
             counts['zero_known_baskets'] += 1
         elif size == 1:
             counts['single_known_baskets'] += 1
+        if size < min_basket_size:
+            counts['small_baskets'] += 1
         elif size > max_basket_size:
             counts['large_baskets'] += 1
         else:
@@ -94,7 +101,7 @@ def preprocess_baskets(raw_dir, embeddings_dir, processed_dir, max_basket_size=3
             for order_id, date, indexes in initial:
                 kept = [index for index in indexes
                         if valid_basket_counts[index] >= min_co_basket_orders]
-                if len(kept) < 2:
+                if len(kept) < min_basket_size:
                     counts['dropped_after_support'] += 1
                     continue
                 record = {'order_id': order_id, 'dt': date, 'items': kept}
@@ -108,6 +115,7 @@ def preprocess_baskets(raw_dir, embeddings_dir, processed_dir, max_basket_size=3
         manifest = {
             'version': 1,
             'parameters': {'max_basket_size': max_basket_size,
+                           'min_basket_size': min_basket_size,
                            'min_co_basket_orders': min_co_basket_orders},
             'inputs': {'orders_sha256': _sha256(source),
                        'index_sha256': _sha256(embeddings_dir / 'index2item.json')},
@@ -135,6 +143,10 @@ def load_processed_baskets(processed_dir, embeddings_dir, max_basket_size=None,
     if manifest.get('version') != 1:
         raise ValueError('unsupported basket manifest version')
     parameters = manifest['parameters']
+    minimum = parameters.get('min_basket_size', 2)
+    if (isinstance(minimum, bool) or not isinstance(minimum, int)
+            or not 2 <= minimum <= parameters['max_basket_size']):
+        raise ValueError('invalid min_basket_size in preprocessing manifest')
     if max_basket_size is not None and parameters['max_basket_size'] != max_basket_size:
         raise ValueError('basket size differs from preprocessing manifest')
     if (min_co_basket_orders is not None
@@ -164,7 +176,7 @@ def load_processed_baskets(processed_dir, embeddings_dir, max_basket_size=None,
         for line in stream:
             record = json.loads(line)
             indexes = record['items']
-            if (not 2 <= len(indexes) <= parameters['max_basket_size']
+            if (not minimum <= len(indexes) <= parameters['max_basket_size']
                     or indexes != sorted(set(indexes))
                     or any(not 0 <= index < len(item_ids)
                            or valid_counts[index] < parameters['min_co_basket_orders']
@@ -182,10 +194,12 @@ def main(argv=None):
     parser.add_argument('embeddings_dir')
     parser.add_argument('processed_dir')
     parser.add_argument('--max-basket-size', type=int, default=30)
+    parser.add_argument('--min-basket-size', type=int, default=2)
     parser.add_argument('--min-co-basket-orders', type=int, default=5)
     args = parser.parse_args(argv)
     counts = preprocess_baskets(args.raw_dir, args.embeddings_dir, args.processed_dir,
-                                args.max_basket_size, args.min_co_basket_orders)
+                                args.max_basket_size, args.min_co_basket_orders,
+                                min_basket_size=args.min_basket_size)
     print(f'购物篮处理完成：{counts["orders"]} 单，'
           f'{counts["final_baskets"]} 个有效训练篮；报告位于 '
           f'{Path(args.processed_dir) / "manifest.json"}')

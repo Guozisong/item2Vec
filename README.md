@@ -69,7 +69,7 @@ tests/                             数据、训练、推理和脚本测试
 | `prod_id` | 商品 ID | 映射到统一商品索引 |
 | `dt` | 订单日期 | 作为必填数据字段进行校验 |
 
-预处理会按完整订单分组、对商品去重、排除商品目录外的记录。保留 2 至 `MAX_BASKET_SIZE` 个不同商品的订单，再移除在有效购物篮中出现少于 `MIN_ORDER_COUNT` 单的商品；过滤后少于两件的篮不进入训练。单商品订单不产生训练商品对，但仍会计入推理使用的商品总订单数。同细分类购物篮保留，由 Item2Vec 学习行为关系。
+预处理会按完整订单分组、对商品去重、排除商品目录外的记录。保留 `--min-basket-size` 至 `MAX_BASKET_SIZE` 个不同商品的订单（默认2至30件），再移除在有效购物篮中出现少于 `MIN_ORDER_COUNT` 单的商品；过滤后商品数低于最小篮大小的篮不进入训练。所有订单仍计入推理使用的商品总订单数。同细分类购物篮保留，由 Item2Vec 学习行为关系。
 
 ## 环境与目录
 
@@ -292,7 +292,19 @@ bash scripts/generate_embeddings.sh --work-dir "$WORK_DIR"
 bash scripts/preprocess_baskets.sh 30 5 --work-dir "$WORK_DIR"
 ```
 
-参数依次为最大篮大小和商品在有效多商品篮中的最低订单数，默认 `30`、`5`。处理结果写入 `<work-dir>/processed/`：`baskets.jsonl` 是有序商品索引购物篮，`support.npz` 保存有效篮支持数与全部订单数，`manifest.json` 记录过滤计数、参数和文件哈希。修改原始订单、商品索引或过滤参数后，需重新运行预处理。
+两个位置参数依次为最大篮大小和商品在有效多商品篮中的最低订单数，默认 `30`、`5`。命名参数 `--min-basket-size N` 控制最小篮大小，默认 `2`，必须为不小于2且不大于最大篮大小的整数；原有位置参数含义保持不变。
+
+例如只保留3至30件商品的购物篮：
+
+```bash
+bash scripts/preprocess_baskets.sh 30 5 --min-basket-size 3 --work-dir "$WORK_DIR"
+```
+
+下限按去重、排除目录外商品后的商品数判断，并在移除低频商品后再次检查。`manifest.json` 的 `parameters.min_basket_size` 记录该值；`counts.small_baskets` 统计首次过滤中低于下限的篮数（包括空篮和单商品篮），`dropped_after_support` 统计移除低频商品后低于下限的篮数。训练自动读取清单中的下限并记录到行为产物元数据，无需给 `train.sh` 重复传入；旧清单没有该字段时按2处理。
+
+完整流水线也可传 `--min-basket-size 3`，仅传给购物篮预处理阶段。
+
+处理结果写入 `<work-dir>/processed/`：`baskets.jsonl` 是有序商品索引购物篮，`support.npz` 保存有效篮支持数与全部订单数，`manifest.json` 记录过滤计数、参数和文件哈希。修改原始订单、商品索引或过滤参数后，需重新运行预处理并重新训练。
 
 ### 4. train：训练行为向量
 

@@ -6,13 +6,21 @@ export PYTHONPATH="${repository_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
 work_dir="${repository_root}/outputs"
 work_dir_set=
 positionals=()
+min_basket_size=2
+min_basket_size_set=
 
 usage() {
-    echo "Usage: $0 [MAX_BASKET_SIZE [MIN_CO_BASKET_ORDERS]] [--work-dir DIR]" >&2
+    echo "Usage: $0 [MAX_BASKET_SIZE [MIN_CO_BASKET_ORDERS]] [--min-basket-size N] [--work-dir DIR]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --min-basket-size)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* && -z "${min_basket_size_set}" ]] || { usage; exit 2; }
+            min_basket_size="$2"
+            min_basket_size_set=1
+            shift 2
+            ;;
         --work-dir)
             [[ $# -ge 2 && -n "$2" && "$2" != --* && -z "${work_dir_set}" ]] || { usage; exit 2; }
             work_dir="$2"
@@ -44,4 +52,5 @@ echo "工作目录：${work_dir}"
 cd "${repository_root}"
 python -m item2vec.preprocessing "${raw_dir}" "${embeddings_dir}" "${processed_dir}" \
     --max-basket-size "${max_basket_size}" \
+    --min-basket-size "${min_basket_size}" \
     --min-co-basket-orders "${min_co_basket_orders}"

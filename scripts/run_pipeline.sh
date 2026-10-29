@@ -9,13 +9,19 @@ work_dir_set=
 env_file_set=
 model_dir_set=
 source_args=()
+min_basket_args=()
 
 usage() {
-    echo "Usage: $0 --item-input-{csv|table|query-file} SOURCE --order-input-{csv|table|query-file} SOURCE [--work-dir DIR] [--env-file FILE] [--model-dir DIR]" >&2
+    echo "Usage: $0 --item-input-{csv|table|query-file} SOURCE --order-input-{csv|table|query-file} SOURCE [--min-basket-size N] [--work-dir DIR] [--env-file FILE] [--model-dir DIR]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --min-basket-size)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* && ${#min_basket_args[@]} -eq 0 ]] || { usage; exit 2; }
+            min_basket_args=(--min-basket-size "$2")
+            shift 2
+            ;;
         --item-input-csv|--item-input-table|--item-input-query-file|--order-input-csv|--order-input-table|--order-input-query-file)
             [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { usage; exit 2; }
             source_args+=("$1" "$2")
@@ -52,6 +58,10 @@ if [[ ${#source_args[@]} -gt 0 ]]; then
 fi
 embedding_args=(--work-dir "${work_dir}")
 train_args=(--work-dir "${work_dir}")
+preprocess_args=(--work-dir "${work_dir}")
+if [[ ${#min_basket_args[@]} -gt 0 ]]; then
+    preprocess_args+=("${min_basket_args[@]}")
+fi
 if [[ -n "${env_file}" ]]; then
     fetch_args+=(--env-file "${env_file}")
 fi
@@ -61,5 +71,5 @@ fi
 
 bash "${repository_root}/scripts/fetch_data.sh" "${fetch_args[@]}"
 bash "${repository_root}/scripts/generate_embeddings.sh" "${embedding_args[@]}"
-bash "${repository_root}/scripts/preprocess_baskets.sh" --work-dir "${work_dir}"
+bash "${repository_root}/scripts/preprocess_baskets.sh" "${preprocess_args[@]}"
 bash "${repository_root}/scripts/train.sh" "${train_args[@]}"
