@@ -10,13 +10,19 @@ env_file_set=
 model_dir_set=
 source_args=()
 min_basket_args=()
+candidate_bias_args=()
 
 usage() {
-    echo "Usage: $0 --item-input-{csv|table|query-file} SOURCE --order-input-{csv|table|query-file} SOURCE [--min-basket-size N] [--work-dir DIR] [--env-file FILE] [--model-dir DIR]" >&2
+    echo "Usage: $0 --item-input-{csv|table|query-file} SOURCE --order-input-{csv|table|query-file} SOURCE [--min-basket-size N] [--candidate-bias-weight N] [--work-dir DIR] [--env-file FILE] [--model-dir DIR]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --candidate-bias-weight)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* && ${#candidate_bias_args[@]} -eq 0 ]] || { usage; exit 2; }
+            candidate_bias_args=(--candidate-bias-weight "$2")
+            shift 2
+            ;;
         --min-basket-size)
             [[ $# -ge 2 && -n "$2" && "$2" != --* && ${#min_basket_args[@]} -eq 0 ]] || { usage; exit 2; }
             min_basket_args=(--min-basket-size "$2")
@@ -58,6 +64,9 @@ if [[ ${#source_args[@]} -gt 0 ]]; then
 fi
 embedding_args=(--work-dir "${work_dir}")
 train_args=(--work-dir "${work_dir}")
+if [[ ${#candidate_bias_args[@]} -gt 0 ]]; then
+    train_args+=("${candidate_bias_args[@]}")
+fi
 preprocess_args=(--work-dir "${work_dir}")
 if [[ ${#min_basket_args[@]} -gt 0 ]]; then
     preprocess_args+=("${min_basket_args[@]}")

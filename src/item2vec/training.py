@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from item2vec.io import load_item_index, load_index_item
 from item2vec.preprocessing import load_processed_baskets
-from item2vec.scoring import compute_candidate_bias
+from item2vec.scoring import compute_candidate_bias, validate_candidate_bias_weight
 
 
 def build_basket_indexes(baskets, item2index):
@@ -132,7 +132,11 @@ def train_item2vec(
 
 
 def write_behavior_embedding(embedding, index2item, order_counts, metadata, downstream_dir,
-                             context_vectors=None):
+                             context_vectors=None, candidate_bias_weight=.4):
+    candidate_bias_weight = validate_candidate_bias_weight(candidate_bias_weight)
+    metadata = dict(metadata)
+    if context_vectors is not None:
+        metadata['candidate_bias_weight'] = candidate_bias_weight
     output_path = Path(downstream_dir) / 'behavior_item.npz'
     temporary_path = output_path.with_name('behavior_item.npz.tmp')
     item_ids = np.asarray([str(index2item[str(i)]) for i in range(len(index2item))])
@@ -144,7 +148,8 @@ def write_behavior_embedding(embedding, index2item, order_counts, metadata, down
                       'item_ids': item_ids, 'order_counts': counts, 'metadata': metadata_json}
             if context_vectors is not None:
                 arrays['context_vectors'] = np.asarray(context_vectors, dtype=np.float32)
-                arrays['candidate_bias'] = compute_candidate_bias(embedding, context_vectors)
+                arrays['candidate_bias'] = compute_candidate_bias(
+                    embedding, context_vectors, weight=candidate_bias_weight)
             np.savez(stream, **arrays)
             stream.seek(0)
             with np.load(stream, allow_pickle=False) as artifact:
@@ -195,7 +200,9 @@ def main(argv=None):
     parser.add_argument('--min-order-count', type=int, default=5)
     parser.add_argument('--negative', type=int, default=15)
     parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--candidate-bias-weight', type=float, default=.4)
     args = parser.parse_args(argv)
+    validate_candidate_bias_weight(args.candidate_bias_weight)
 
     item2index = load_item_index(args.downstream_dir)
     index2item = load_index_item(args.downstream_dir)
@@ -212,6 +219,7 @@ def main(argv=None):
     print(f'已读取 {stats["input_rows"]} 条行为，包含 {stats["orders"]} 个订单。')
     print(f'已构建 {stats["final_baskets"]} 个有效购物篮，排除 {stats["large_baskets"]} 个超大购物篮，'
           f'商品目录共 {len(item2index)} 个商品。')
+    print(f'候选偏置校正强度：{args.candidate_bias_weight:g}', flush=True)
     metadata = {
         'vector_size': args.vector_size,
         'max_basket_size': args.max_basket_size,
@@ -235,6 +243,7 @@ def main(argv=None):
     output_path = write_behavior_embedding(
         trained_embedding, index2item, all_order_counts, metadata, args.downstream_dir,
         context_vectors=context_vectors,
+        candidate_bias_weight=args.candidate_bias_weight,
     )
     covered = np.count_nonzero(np.any(trained_embedding != 0, axis=1))
     print(f'行为向量覆盖 {covered} 个商品，其余 {len(item2index) - covered} 个商品'

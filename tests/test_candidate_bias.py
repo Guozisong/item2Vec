@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -47,3 +49,26 @@ def test_behavior_artifact_persists_precomputed_bias(tmp_path):
     with np.load(path, allow_pickle=False) as artifact:
         np.testing.assert_array_equal(artifact['candidate_bias'],
                                       compute_candidate_bias(vectors, contexts))
+
+
+@pytest.mark.parametrize('weight', [0., .6, .8, 1.2])
+def test_candidate_bias_weight_scales_saved_bias_and_metadata(tmp_path, weight):
+    inputs = np.array([[1., 0.], [0., 1.]])
+    contexts = np.array([[2., 1.], [1., 3.]])
+    baseline = compute_candidate_bias(inputs, contexts)
+    bias = compute_candidate_bias(inputs, contexts, weight=weight)
+    np.testing.assert_allclose(bias, baseline * (weight / .4))
+    original_metadata = {'epochs': 10}
+    path = write_behavior_embedding(inputs, {'0': 'A', '1': 'B'}, [5, 5], original_metadata,
+                                    tmp_path, context_vectors=contexts,
+                                    candidate_bias_weight=weight)
+    with np.load(path, allow_pickle=False) as artifact:
+        np.testing.assert_array_equal(artifact['candidate_bias'], bias)
+        assert json.loads(artifact['metadata'].item())['candidate_bias_weight'] == weight
+    assert original_metadata == {'epochs': 10}
+
+
+@pytest.mark.parametrize('weight', [-.1, float('nan'), float('inf'), True, '0.6'])
+def test_candidate_bias_rejects_invalid_weight(weight):
+    with pytest.raises(ValueError, match='candidate_bias_weight'):
+        compute_candidate_bias(np.eye(2), np.eye(2), weight=weight)

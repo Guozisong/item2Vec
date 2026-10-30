@@ -6,13 +6,21 @@ export PYTHONPATH="${repository_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
 work_dir="${repository_root}/outputs"
 work_dir_set=
 positionals=()
+candidate_bias_weight=.4
+candidate_bias_weight_set=
 
 usage() {
-    echo "Usage: $0 [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS] [--work-dir DIR]" >&2
+    echo "Usage: $0 [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS [CANDIDATE_BIAS_WEIGHT]] [--candidate-bias-weight N] [--work-dir DIR]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --candidate-bias-weight)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* && -z "${candidate_bias_weight_set}" ]] || { usage; exit 2; }
+            candidate_bias_weight="$2"
+            candidate_bias_weight_set=1
+            shift 2
+            ;;
         --work-dir)
             [[ $# -ge 2 && -n "$2" && "$2" != --* && -z "${work_dir_set}" ]] || { usage; exit 2; }
             work_dir="$2"
@@ -42,11 +50,15 @@ case "$#" in
         negative=15
         epochs=10
         ;;
-    4)
+    4|5)
         vector_size="$1"
         max_basket_size="$2"
         negative="$3"
         epochs="$4"
+        if [[ $# -eq 5 ]]; then
+            [[ -z "${candidate_bias_weight_set}" ]] || { usage; exit 2; }
+            candidate_bias_weight="$5"
+        fi
         ;;
     *)
         usage
@@ -75,4 +87,5 @@ python -m item2vec.training "${processed_dir}" "${embeddings_dir}" \
     --max-basket-size "${max_basket_size}" \
     --negative "${negative}" \
     --epochs "${epochs}" \
+    --candidate-bias-weight "${candidate_bias_weight}" \
     --min-order-count "${MIN_ORDER_COUNT:-5}"

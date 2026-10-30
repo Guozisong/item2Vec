@@ -133,10 +133,10 @@ bash scripts/preprocess_baskets.sh [MAX_BASKET_SIZE [MIN_CO_BASKET_ORDERS [MIN_B
 ### 4. train：训练行为向量
 
 ```text
-bash scripts/train.sh [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS] [--work-dir DIR]
+bash scripts/train.sh [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS [CANDIDATE_BIAS_WEIGHT]] [--work-dir DIR]
 ```
 
-四个位置参数须同时提供或全部省略，默认依次为 `128 30 15 10`。
+前四个位置参数须同时提供或全部省略，默认依次为 `128 30 15 10`；第五个为可选的候选偏置校正强度，默认 `0.4`。
 
 | 参数 | 含义 |
 | --- | --- |
@@ -144,6 +144,15 @@ bash scripts/train.sh [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS] [--work-dir 
 | `MAX_BASKET_SIZE` | 必须与预处理清单一致，也用作完整购物篮上下文窗口 |
 | `NEGATIVE` | 每个正样本的负采样数量 |
 | `EPOCHS` | 训练轮数 |
+| `CANDIDATE_BIAS_WEIGHT` | 候选偏置校正强度，必须是有限非负数；`0` 关闭校正 |
+
+例如使用0.6的校正强度：
+
+```bash
+bash scripts/train.sh 256 30 15 10 0.6 --work-dir "$WORK_DIR"
+```
+
+也支持命名参数 `--candidate-bias-weight 0.6`，可配合默认训练参数使用，但不能与第五个位置参数同时指定。该值随模型记录在 `metadata.candidate_bias_weight` 中，查询与导出使用模型中保存的偏置；只重新导出不会更改旧模型的校正强度。它与查询/导出的文本权重参数不同。
 
 `MIN_ORDER_COUNT` 环境变量默认5，须与预处理的第二个位置参数一致；最小篮大小自动读取清单，无需重复传入。例如预处理使用 `30 8 3`，训练时应设置 `MIN_ORDER_COUNT=8`。
 
@@ -187,7 +196,7 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 
 行为与迁移路径仅从有行为向量的商品中选候选；文本回退可选全部目录商品。迁移需要至少2个参考，最多取5个，文本余弦不低于0.8，以温度0.1的 softmax 权重平均输入行为向量。细分类从 `raw/item.csv` 描述中 `商品品牌为` 前的文本取得，因此应保留该文件。迁移向量不写回训练产物。
 
-候选偏置是该候选与全部有效输入向量的最高10个内积均值乘以0.4（不足10个取全部），在训练时预计算。非零文本权重会融合行为分数与文本余弦各自的百分位排名。旧模型缺少上下文向量时使用输入向量余弦；缺少偏置时使用未经校正的内积。重新训练才能使用新的负采样设置、上下文向量和偏置；已有产物可直接使用冷启动回退链。
+候选偏置是该候选与全部有效输入向量的最高10个内积均值乘以校正强度（默认0.4，不足10个取全部），在训练时预计算。非零文本权重会融合行为分数与文本余弦各自的百分位排名。旧模型缺少上下文向量时使用输入向量余弦；缺少偏置时使用未经校正的内积。重新训练才能使用新的负采样设置、上下文向量和偏置；已有产物可直接使用冷启动回退链。
 
 **`similar/hybrid` 的订单置信度：**
 
@@ -222,6 +231,8 @@ bash scripts/run_pipeline.sh \
 ```
 
 完整流水线使用各阶段默认训练参数（128维、最大篮30、负采样15、10轮）；`--min-basket-size` 默认2，仅传给预处理。若需256维或其他训练参数，使用快速开始中的独立阶段命令。
+
+完整流水线可传 `--candidate-bias-weight 0.6`，仅传给训练阶段，默认0.4。
 
 任一耗时阶段均可使用 `nohup`：
 

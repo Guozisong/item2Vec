@@ -371,7 +371,7 @@ def test_train_script_forwards_default_parameters(tmp_path):
     assert arguments == [
         str(tmp_path / "outputs" / "processed"), str(tmp_path / "outputs" / "embeddings"),
         "--vector-size", "128", "--max-basket-size", "30", "--negative", "15",
-        "--epochs", "10", "--min-order-count", "5",
+        "--epochs", "10", "--candidate-bias-weight", ".4", "--min-order-count", "5",
     ]
 
 
@@ -382,8 +382,30 @@ def test_train_script_forwards_custom_parameters(tmp_path):
     assert arguments == [
         str(tmp_path / "outputs" / "processed"), str(tmp_path / "outputs" / "embeddings"),
         "--vector-size", "64", "--max-basket-size", "30", "--negative", "4",
-        "--epochs", "6", "--min-order-count", "5",
+        "--epochs", "6", "--candidate-bias-weight", ".4", "--min-order-count", "5",
     ]
+
+
+@pytest.mark.parametrize('arguments,expected', [
+    (['256', '30', '15', '10', '0.6'], '0.6'),
+    (['--candidate-bias-weight', '0.8'], '0.8'),
+    (['--candidate-bias-weight', '0', '256', '30', '15', '10'], '0'),
+])
+def test_train_script_forwards_candidate_bias_weight(tmp_path, arguments, expected):
+    result, forwarded = _run_train_script_with_stub(tmp_path, arguments)
+    assert result.returncode == 0
+    assert forwarded[forwarded.index('--candidate-bias-weight') + 1] == expected
+
+
+@pytest.mark.parametrize('arguments', [
+    ['--candidate-bias-weight'],
+    ['--candidate-bias-weight', '.6', '--candidate-bias-weight', '.8'],
+    ['256', '30', '15', '10', '.6', '--candidate-bias-weight', '.8'],
+])
+def test_train_script_rejects_ambiguous_candidate_bias_weight(tmp_path, arguments):
+    result, forwarded = _run_train_script_with_stub(tmp_path, arguments)
+    assert result.returncode != 0
+    assert 'Usage:' in result.stderr and forwarded == []
 
 
 @pytest.mark.parametrize("arguments", [[], ["64", "30", "4", "6"]])
@@ -399,7 +421,7 @@ def test_train_script_forwards_min_order_count_environment(
     assert forwarded[-2:] == ["--min-order-count", expected]
 
 
-@pytest.mark.parametrize("arguments", [["0.7"], ["0.7", "20"], ["0.7", "20", "15"], ["0.7", "20", "15", "10", "extra"]])
+@pytest.mark.parametrize("arguments", [["0.7"], ["0.7", "20"], ["0.7", "20", "15"], ["0.7", "20", "15", "10", ".6", "extra"]])
 def test_train_script_rejects_partial_or_extra_parameter_sets(tmp_path, arguments):
     result, forwarded = _run_train_script_with_stub(tmp_path, arguments)
 
@@ -684,6 +706,21 @@ def test_pipeline_forwards_minimum_only_to_preprocessing(tmp_path):
     assert result.returncode == 0
     assert calls[2].endswith('--min-basket-size 3')
     assert all('--min-basket-size' not in calls[i] for i in (0, 1, 3))
+
+
+def test_pipeline_forwards_candidate_bias_weight_only_to_training(tmp_path):
+    result, calls = _run_pipeline_with_argument_logging(tmp_path, ['--candidate-bias-weight', '.8'])
+    assert result.returncode == 0
+    assert calls[3].endswith('--candidate-bias-weight .8')
+    assert all('--candidate-bias-weight' not in call for call in calls[:3])
+
+
+@pytest.mark.parametrize('arguments', [['--candidate-bias-weight'],
+    ['--candidate-bias-weight', '.6', '--candidate-bias-weight', '.8']])
+def test_pipeline_rejects_missing_or_repeated_candidate_bias_weight(tmp_path, arguments):
+    result, calls = _run_pipeline_with_argument_logging(tmp_path, arguments)
+    assert result.returncode != 0
+    assert 'Usage:' in result.stderr and calls == []
 
 
 @pytest.mark.parametrize('script', ['preprocess_baskets.sh', 'run_pipeline.sh'])

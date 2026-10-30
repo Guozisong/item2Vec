@@ -348,7 +348,8 @@ def test_train_rejects_invalid_order_counts(counts):
         training.train_item2vec({"A": 0, "B": 1}, [["0", "1"]], np.array(counts))
 
 
-def test_main_trains_behavior_only_and_preserves_string_product_ids(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize('bias_weight', [None, '.8'])
+def test_main_trains_behavior_only_and_preserves_string_product_ids(monkeypatch, tmp_path, capsys, bias_weight):
     captured = {}
     raw_dir = tmp_path / "raw"
     raw_dir.mkdir()
@@ -376,7 +377,8 @@ def test_main_trains_behavior_only_and_preserves_string_product_ids(monkeypatch,
     )
 
     training.main([str(processed_dir), str(tmp_path), "--vector-size", "4", "--max-basket-size", "9",
-                   "--negative", "3", "--epochs", "7", "--min-order-count", "2"])
+                   "--negative", "3", "--epochs", "7", "--min-order-count", "2",
+                   *(['--candidate-bias-weight', bias_weight] if bias_weight else [])])
 
     assert captured["item2index"] == {"001": 0, "B": 1}
     assert captured["baskets"] == [["0", "1"], ["0", "1"]]
@@ -392,6 +394,7 @@ def test_main_trains_behavior_only_and_preserves_string_product_ids(monkeypatch,
             "vector_size": 4, "max_basket_size": 9, "negative": 3, "epochs": 7, "min_order_count": 2,
             "ns_exponent": .5,
             "min_basket_size": 2,
+            "candidate_bias_weight": float(bias_weight) if bias_weight else .4,
         }
     output = capsys.readouterr().out
     assert "已读取 5 条行为，包含 3 个订单。" in output
@@ -402,6 +405,13 @@ def test_main_trains_behavior_only_and_preserves_string_product_ids(monkeypatch,
     assert "complement 模式尝试行为迁移后回退文本" in output
     assert str(tmp_path / "behavior_item.npz") in output
     assert not (tmp_path / "trained_item.featCLS").exists()
+
+
+@pytest.mark.parametrize('weight', ['-1', 'nan', 'inf'])
+def test_main_rejects_invalid_bias_weight_before_reading_or_training(tmp_path, weight):
+    with pytest.raises(ValueError, match='candidate_bias_weight'):
+        training.main([str(tmp_path / 'absent'), str(tmp_path / 'absent'),
+                       '--candidate-bias-weight', weight])
 
 
 def test_main_preserves_distinct_string_order_ids(monkeypatch, tmp_path, capsys):
