@@ -1,10 +1,12 @@
 import csv
 import json
+import zipfile
 
 import numpy as np
 import pytest
 
 from item2vec.preprocessing import preprocess_baskets, load_processed_baskets
+from item2vec import preprocessing
 
 
 def _fixture(tmp_path, rows):
@@ -151,3 +153,86 @@ def test_preprocess_rejects_invalid_required_values(tmp_path, rows, message):
     raw, embeddings, processed = _fixture(tmp_path, rows)
     with pytest.raises(ValueError, match=message):
         preprocess_baskets(raw, embeddings, processed)
+
+
+def test_preprocess_support_works_with_output_that_rejects_seek(monkeypatch, tmp_path):
+    raw, embeddings, processed = _fixture(tmp_path, [
+        ('one', 'A', '20261001'), ('one', 'B', '20261001'),
+    ])
+    real_open = preprocessing.Path.open
+    writers = []
+
+    class MountedWriter:
+        def __init__(self, stream):
+            self.stream = stream
+            self.seeks = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def seek(self, *args):
+            self.seeks += 1
+            if self.seeks > 1:
+                raise OSError(22, 'Invalid argument')
+            return self.stream.seek(*args)
+
+    def open_output(path, mode='r', *args, **kwargs):
+        stream = real_open(path, mode, *args, **kwargs)
+        if path == processed / 'support.npz.tmp' and mode == 'wb':
+            stream = MountedWriter(stream)
+            writers.append(stream)
+        return stream
+
+    monkeypatch.setattr(preprocessing.Path, 'open', open_output)
+    preprocess_baskets(raw, embeddings, processed, min_co_basket_orders=1)
+    baskets, all_counts, support, manifest = load_processed_baskets(processed, embeddings)
+    assert baskets == [['0', '1']]
+    np.testing.assert_array_equal(all_counts, [1, 1, 0, 0])
+    np.testing.assert_array_equal(support, [1, 1, 0, 0])
+    assert manifest['counts']['final_baskets'] == 1
+    assert len(writers) == 1 and writers[0].seeks == 0
+    with zipfile.ZipFile(processed / 'support.npz') as archive:
+        assert len(archive.infolist()) == 3
+        assert all(entry.flag_bits & 0x08 for entry in archive.infolist())
+
+
+@pytest.mark.parametrize('failure', ['serialization', 'write'])
+def test_support_write_failure_preserves_published_artifacts(monkeypatch, tmp_path, failure):
+    raw, embeddings, processed = _fixture(tmp_path, [
+        ('one', 'A', '20261001'), ('one', 'B', '20261001'),
+    ])
+    preprocess_baskets(raw, embeddings, processed, min_co_basket_orders=1)
+    published = {name: (processed / name).read_bytes()
+                 for name in ('baskets.jsonl', 'support.npz', 'manifest.json')}
+    output_streams = []
+
+    def failing_savez(stream, **arrays):
+        output_streams.append(stream.stream)
+        stream.write(b'partial archive')
+        raise OSError('simulated serialization failure')
+
+    original_write = preprocessing._SequentialWriter.write
+
+    def failing_write(writer, data):
+        if not output_streams:
+            output_streams.append(writer.stream)
+            writer.stream.write(data[:16])
+            raise OSError('simulated write failure')
+        return original_write(writer, data)
+
+    if failure == 'serialization':
+        monkeypatch.setattr(preprocessing.np, 'savez', failing_savez)
+    else:
+        monkeypatch.setattr(preprocessing._SequentialWriter, 'write', failing_write)
+    with pytest.raises(OSError, match='simulated'):
+        preprocess_baskets(raw, embeddings, processed, min_co_basket_orders=1)
+    assert all((processed / name).read_bytes() == content
+               for name, content in published.items())
+    assert not list(processed.glob('*.tmp'))
+    assert len(output_streams) == 1 and output_streams[0].closed

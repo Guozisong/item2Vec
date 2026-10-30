@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,23 @@ import numpy as np
 import pandas as pd
 
 from item2vec.io import load_index_item, load_item_index
+
+
+class _SequentialWriter:
+    """Expose a write-only stream without seek/tell so ZIP uses data descriptors."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, data):
+        return self.stream.write(data)
+
+    def flush(self):
+        self.stream.flush()
+
+    def read(self, *args):
+        # NumPy checks for read() to recognize a file-like object.
+        raise io.UnsupportedOperation('write only')
 
 
 def _sha256(path):
@@ -109,8 +127,9 @@ def preprocess_baskets(raw_dir, embeddings_dir, processed_dir, max_basket_size=3
                 counts['final_baskets'] += 1
         if not counts['final_baskets']:
             raise ValueError('no qualifying baskets remain after preprocessing')
+        # Hide seek/tell from ZIP to stream headers, data, and trailing descriptors.
         with support_temp.open('wb') as stream:
-            np.savez(stream, item_ids=item_ids, all_order_counts=all_order_counts,
+            np.savez(_SequentialWriter(stream), item_ids=item_ids, all_order_counts=all_order_counts,
                      valid_basket_counts=valid_basket_counts)
         manifest = {
             'version': 1,

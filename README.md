@@ -128,6 +128,8 @@ bash scripts/preprocess_baskets.sh [MAX_BASKET_SIZE [MIN_CO_BASKET_ORDERS [MIN_B
 
 输出 `processed/` 下的购物篮、支持数组和清单。清单记录参数、过滤计数及文件哈希：`small_baskets` 包括首次过滤中低于下限的空篮和单商品篮，`dropped_after_support` 记录移除低频商品后低于下限的篮数。原始订单、索引或过滤参数改变后，需重新预处理并训练。
 
+`support.npz` 使用流式 ZIP 顺序写入，写入期间不对输出文件执行 `seek()` 回退，也不需要在本地临时目录中转。写入完成后仍通过清单校验，文件格式与现有 `np.load()` 读取方式兼容。
+
 ### 4. train：训练行为向量
 
 ```text
