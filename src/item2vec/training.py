@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from item2vec.io import load_item_index, load_index_item
-from item2vec.preprocessing import load_processed_baskets
+from item2vec.io import load_item_index, load_index_item, write_json_atomic
+from item2vec.preprocessing import load_processed_baskets, _sha256
 from item2vec.scoring import compute_candidate_bias, validate_candidate_bias_weight
 
 
@@ -81,6 +81,7 @@ def train_item2vec(
     min_order_count=5,
     workers=8,
     ns_exponent=.5,
+    seed=None,
 ):
     for name, value in [('vector_size', vector_size), ('max_basket_size', max_basket_size),
                         ('negative', negative), ('epochs', epochs),
@@ -113,6 +114,7 @@ def train_item2vec(
         epochs=epochs,
         alpha=0.002,
         min_alpha=0.0005,
+        **({'seed': seed} if seed is not None else {}),
     )
     model.build_vocab(training_baskets)
     print(f'开始训练行为向量：{epochs} 轮，维度 {vector_size}。', flush=True)
@@ -191,6 +193,15 @@ def write_behavior_embedding(embedding, index2item, order_counts, metadata, down
     return output_path
 
 
+class _Once(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        seen = getattr(namespace, '_supplied_training_options', set())
+        if self.dest in seen:
+            parser.error(f'{option_string} may only be specified once')
+        setattr(namespace, self.dest, values)
+        namespace._supplied_training_options = seen | {self.dest}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('processed_dir')
@@ -201,8 +212,35 @@ def main(argv=None):
     parser.add_argument('--negative', type=int, default=15)
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--candidate-bias-weight', type=float, default=.4)
+    parser.add_argument('--check-options', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--trainer', choices=['gensim', 'sgns'], default='gensim', action=_Once)
+    parser.add_argument('--seed', type=int, action=_Once)
+    for option, kind in [('basket-pair-budget', int), ('negative-exclusion', str),
+                         ('hard-negative-ratio', float), ('hard-negative-warmup', int),
+                         ('hard-negative-pool-size', int), ('pair-batch-size', int),
+                         ('validation-orders', str), ('patience', int), ('min-delta', float), ('device', str)]:
+        parser.add_argument('--' + option, type=kind, action=_Once)
     args = parser.parse_args(argv)
     validate_candidate_bias_weight(args.candidate_bias_weight)
+    from item2vec.sampling import validate_integer
+    for name in ('vector_size','negative','epochs','min_order_count'):
+        validate_integer(getattr(args,name),name)
+    validate_integer(args.max_basket_size,'max_basket_size',2)
+    if args.seed is not None:
+        validate_integer(args.seed, 'seed', 0)
+    supplied = getattr(args, '_supplied_training_options', set()) - {'trainer', 'seed'}
+    if args.trainer == 'gensim' and supplied:
+        raise ValueError(f'SGNS options require --trainer sgns: {sorted(supplied)}')
+    if not args.validation_orders and ({'patience', 'min_delta'} & supplied):
+        raise ValueError('patience and min_delta require --validation-orders')
+    sgns_config = None
+    if args.trainer == 'sgns':
+        from item2vec.sgns import DEFAULTS, validate_config
+        sgns_config = {name: getattr(args, name) for name in DEFAULTS
+                       if hasattr(args, name) and getattr(args, name) is not None}
+        sgns_config = validate_config(sgns_config)
+    if args.check_options:
+        return
 
     item2index = load_item_index(args.downstream_dir)
     index2item = load_index_item(args.downstream_dir)
@@ -214,6 +252,7 @@ def main(argv=None):
         args.processed_dir, args.downstream_dir,
         max_basket_size=args.max_basket_size,
         min_co_basket_orders=args.min_order_count,
+        **({'compact': True} if args.trainer == 'sgns' else {}),
     )
     stats = manifest['counts']
     print(f'已读取 {stats["input_rows"]} 条行为，包含 {stats["orders"]} 个订单。')
@@ -228,17 +267,45 @@ def main(argv=None):
         'min_order_count': args.min_order_count,
         'ns_exponent': .5,
     }
-    trained_embedding, model = train_item2vec(
-        item2index,
-        basket_indexes,
-        valid_basket_counts,
-        **metadata,
-    )
-    context_vectors = None
-    if model is not None:
-        context_vectors = np.zeros_like(trained_embedding)
-        for row, key in enumerate(model.wv.index_to_key):
-            context_vectors[int(key)] = model.syn1neg[row]
+    if args.seed is not None:
+        metadata['seed'] = args.seed
+    if args.trainer == 'sgns':
+        from item2vec.sgns import train_sgns
+        from item2vec.evaluation import BehaviorEvaluator, load_validation_orders, load_item_categories
+        metadata.update(min_basket_size=manifest['parameters'].get('min_basket_size', 2),
+                        training_inputs=manifest['inputs'])
+        evaluator = None
+        if args.validation_orders:
+            rows = load_validation_orders(args.processed_dir, args.validation_orders)
+            item_csv = Path(args.processed_dir).parent / 'raw' / 'item.csv'
+            categories = load_item_categories(item_csv) if item_csv.is_file() else None
+            counts = np.bincount(basket_indexes.items, minlength=len(item2index))
+            evaluator = BehaviorEvaluator(rows, index2item, counts, args.candidate_bias_weight, categories)
+            metadata['validation_sha256'] = _sha256(args.validation_orders)
+        destination = Path(args.downstream_dir)
+        destination.mkdir(parents=True, exist_ok=True)
+        history = []
+        def on_epoch(record):
+            history.append(record)
+            write_json_atomic(history, destination.parent / 'history.json')
+            print(json.dumps(record, ensure_ascii=False, allow_nan=False), flush=True)
+        def on_best(vectors, contexts, details):
+            write_behavior_embedding(vectors, index2item, all_order_counts, {**metadata, **details},
+                                     destination, contexts, args.candidate_bias_weight)
+        result = train_sgns(basket_indexes, len(item2index), sgns_config,
+                            validate_epoch=evaluator, on_epoch=on_epoch, on_best=on_best)
+        trained_embedding, context_vectors = result['vectors'], result['context_vectors']
+        metadata.update(result['metadata'])
+        if evaluator:
+            write_json_atomic(result['history'][metadata['best_epoch']-1]['metrics'],
+                              destination.parent / 'validation.json')
+    else:
+        trained_embedding, model = train_item2vec(item2index, basket_indexes, valid_basket_counts, **metadata)
+        context_vectors = None
+        if model is not None:
+            context_vectors = np.zeros_like(trained_embedding)
+            for row, key in enumerate(model.wv.index_to_key):
+                context_vectors[int(key)] = model.syn1neg[row]
     metadata['min_basket_size'] = manifest['parameters'].get('min_basket_size', 2)
     output_path = write_behavior_embedding(
         trained_embedding, index2item, all_order_counts, metadata, args.downstream_dir,

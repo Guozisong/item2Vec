@@ -36,7 +36,9 @@ def _run_pipeline_with_stubs(tmp_path, generate_exit_code=0, preprocess_exit_cod
         ["/bin/bash", str(pipeline)],
         text=True,
         capture_output=True,
-        env={**os.environ, "PIPELINE_LOG": str(log)},
+        env={**os.environ, "PIPELINE_LOG": str(log),
+             "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get('PATH',''),
+             "PYTHONPATH": str(SCRIPTS.parent/'src')},
     )
     return result, log.read_text().splitlines()
 
@@ -375,6 +377,34 @@ def test_train_script_forwards_default_parameters(tmp_path):
     ]
 
 
+def test_train_script_forwards_sgns_options(tmp_path):
+    options = ['--trainer','sgns','--basket-pair-budget','30','--negative-exclusion','basket',
+               '--hard-negative-ratio','0.2','--hard-negative-warmup','2','--hard-negative-pool-size','128',
+               '--pair-batch-size','4096','--validation-orders','validation.csv','--patience','3',
+               '--min-delta','0.0001','--seed','17','--device','cpu']
+    result, arguments = _run_train_script_with_stub(tmp_path, options)
+    assert result.returncode == 0
+    for name, value in zip(options[::2], options[1::2]):
+        assert arguments[arguments.index(name)+1] == value
+
+
+def test_train_can_read_shared_processed_directory(tmp_path):
+    shared = tmp_path/'shared-processed'
+    shared.mkdir()
+    for name in ('baskets.jsonl','support.npz','manifest.json'):
+        (shared/name).write_text('stub')
+    result, forwarded = _run_train_script_with_stub(tmp_path,['--processed-dir',str(shared)])
+    assert result.returncode == 0
+    assert forwarded[0] == str(shared)
+
+
+@pytest.mark.parametrize('arguments', [['--trainer'], ['--trainer','sgns','--trainer','sgns'],
+    ['--seed','17','--seed','42']])
+def test_train_script_rejects_repeated_or_missing_sgns_options(tmp_path, arguments):
+    result, forwarded = _run_train_script_with_stub(tmp_path, arguments)
+    assert result.returncode != 0 and forwarded == []
+
+
 def test_train_script_forwards_custom_parameters(tmp_path):
     result, arguments = _run_train_script_with_stub(tmp_path, ["64", "30", "4", "6"])
 
@@ -668,7 +698,9 @@ def _run_pipeline_with_argument_logging(tmp_path, arguments):
         ["/bin/bash", str(pipeline), *arguments],
         text=True,
         capture_output=True,
-        env={**os.environ, "PIPELINE_LOG": str(log)},
+        env={**os.environ, "PIPELINE_LOG": str(log),
+             "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get('PATH',''),
+             "PYTHONPATH": str(SCRIPTS.parent/'src')},
     )
     return result, log.read_text().splitlines() if log.exists() else []
 
@@ -706,6 +738,26 @@ def test_pipeline_forwards_minimum_only_to_preprocessing(tmp_path):
     assert result.returncode == 0
     assert calls[2].endswith('--min-basket-size 3')
     assert all('--min-basket-size' not in calls[i] for i in (0, 1, 3))
+
+
+def test_pipeline_forwards_sgns_options_only_to_training(tmp_path):
+    result, calls = _run_pipeline_with_argument_logging(tmp_path,
+        ['--trainer','sgns','--basket-pair-budget','30','--seed','17'])
+    assert result.returncode == 0
+    assert calls[3].endswith('--trainer sgns --basket-pair-budget 30 --seed 17')
+    assert all('--trainer' not in call and '--seed' not in call for call in calls[:3])
+
+
+@pytest.mark.parametrize('arguments', [
+    ['--device','cpu'], ['--hard-negative-ratio','.2'],
+    ['--trainer','sgns','--hard-negative-ratio','1'],
+    ['--trainer','sgns','--patience','3'], ['--candidate-bias-weight','-1'],
+    ['--seed','-1'],
+])
+def test_pipeline_rejects_bad_training_options_before_any_stage(tmp_path,arguments):
+    result,calls = _run_pipeline_with_argument_logging(tmp_path,arguments)
+    assert result.returncode != 0
+    assert calls==[]
 
 
 def test_pipeline_forwards_candidate_bias_weight_only_to_training(tmp_path):

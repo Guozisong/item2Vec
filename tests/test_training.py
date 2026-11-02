@@ -10,6 +10,56 @@ from item2vec import training
 from item2vec.training import write_behavior_embedding
 
 
+def test_sgns_cli_runs_validation_saves_best_and_keeps_artifact_contract(tmp_path):
+    from item2vec.io import write_item_indexes
+    from item2vec.preprocessing import preprocess_baskets
+    raw, embeddings, processed = (tmp_path/name for name in ('raw','embeddings','processed'))
+    raw.mkdir(); embeddings.mkdir()
+    write_item_indexes(['001','B','C','D','cold'], embeddings)
+    rows = [(f't{i}', item, '20261001') for i in range(8) for item in ('001','B')]
+    rows += [(f'u{i}', item, '20261001') for i in range(8) for item in ('C','D')]
+    pd.DataFrame(rows,columns=['order_id','prod_id','dt']).to_csv(raw/'order_item.csv',index=False)
+    preprocess_baskets(raw,embeddings,processed,min_co_basket_orders=1)
+    val = tmp_path/'validation.csv'
+    val.write_text('order_id,prod_id,dt\nv,001,20261002\nv,B,20261002\n')
+    training.main([str(processed),str(embeddings),'--trainer','sgns','--vector-size','8',
+                   '--epochs','5','--negative','2','--min-order-count','1',
+                   '--validation-orders',str(val),'--device','cpu','--seed','17'])
+    with np.load(embeddings/'behavior_item.npz',allow_pickle=False) as artifact:
+        assert {'vectors','context_vectors','candidate_bias','item_ids','order_counts','metadata'} <= set(artifact.files)
+        assert artifact['item_ids'][0] == '001'
+        assert artifact['vectors'].shape == (5,8) and not artifact['vectors'][4].any()
+        metadata = json.loads(artifact['metadata'].item())
+        assert metadata['trainer']=='sgns' and metadata['best_epoch']==1
+        assert metadata['trained_epochs']==4 and metadata['selection_mode']=='validation'
+    history = json.loads((tmp_path/'history.json').read_text())
+    assert len(history)==4
+    np.eye(5,768,dtype=np.float32).tofile(embeddings/'item.feat1CLS')
+    from item2vec.inference import load_trained_artifacts, query_item
+    assert load_trained_artifacts(embeddings)[2].shape==(5,8)
+    warm = pd.read_csv(query_item(embeddings,'001',top_k=2,recall_mode='complement',text_weight=0.),dtype=str)
+    cold = pd.read_csv(query_item(embeddings,'cold',top_k=2,recall_mode='complement',text_weight=0.),dtype=str)
+    assert len(warm)==2 and set(warm.recall_source)=={'behavior'}
+    assert 'cold' not in set(warm.slave_prod_id)
+    assert len(cold)==2 and set(cold.recall_source)=={'text_fallback'}
+
+
+@pytest.mark.parametrize('arguments', [
+    ['--trainer','sgns','--hard-negative-ratio','1'],
+    ['--trainer','gensim','--basket-pair-budget','30'],
+    ['--trainer','sgns','--patience','3'],
+    ['--seed','-1'],
+])
+def test_new_training_options_are_validated_before_loading_files(tmp_path,arguments):
+    with pytest.raises(ValueError):
+        training.main([str(tmp_path/'absent'),str(tmp_path/'absent'),*arguments])
+
+
+def test_duplicate_sgns_cli_option_is_rejected():
+    with pytest.raises(SystemExit):
+        training.main(['absent','absent','--trainer','sgns','--trainer','sgns'])
+
+
 def test_prepare_order_baskets_groups_orders_deduplicates_and_canonicalizes_indexes():
     item2index = {"A": 2, "B": 0, "C": 1}
     dataframe = pd.DataFrame(

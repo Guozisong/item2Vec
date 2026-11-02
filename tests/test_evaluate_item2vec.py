@@ -3,6 +3,73 @@ import pandas as pd
 from item2vec.evaluation import evaluate_predictions, load_item_categories, split_orders
 
 
+def test_macro_recall_gives_each_source_equal_weight():
+    import pytest
+    orders = pd.DataFrame([
+        ('1', 'A'), ('1', 'B'), ('2', 'A'), ('2', 'C'), ('3', 'A'), ('3', 'D'),
+    ], columns=['order_id', 'prod_id'])
+    predictions = pd.DataFrame([
+        ('A', 'B'), ('B', 'A'), ('C', 'A'), ('D', 'A'),
+    ], columns=['master_prod_id', 'slave_prod_id'])
+    result = evaluate_predictions(orders, predictions, top_k=1)
+    assert result['macro_recall_at_k'] == pytest.approx((1/3 + 1 + 1 + 1)/4)
+    assert result['pair_recall_at_k'] == pytest.approx(4/6)
+
+
+def test_prepared_truth_matches_uncached_evaluation_and_warm_cohort():
+    from item2vec.evaluation import prepare_truth, evaluate_rankings
+    orders = pd.DataFrame([
+        ('1', 'A'), ('1', 'B'), ('1', 'cold'), ('2', 'C'), ('2', 'cold'),
+    ], columns=['order_id', 'prod_id'])
+    predictions = pd.DataFrame([('A', 'B'), ('B', 'A')],
+                              columns=['master_prod_id', 'slave_prod_id'])
+    assert evaluate_rankings(prepare_truth(orders), predictions) == evaluate_predictions(orders, predictions)
+    warm = prepare_truth(orders, allowed_items={'A', 'B', 'C'})
+    assert set(warm) == {'A', 'B'}
+    assert evaluate_rankings(warm, predictions)['macro_recall_at_k'] == 1
+
+
+def test_no_multitem_truth_fails_clearly():
+    import pytest
+    orders = pd.DataFrame([('1', 'A'), ('2', 'B')], columns=['order_id', 'prod_id'])
+    predictions = pd.DataFrame(columns=['master_prod_id', 'slave_prod_id'])
+    with pytest.raises(ValueError, match='multi-item'):
+        evaluate_predictions(orders, predictions)
+
+
+def test_behavior_evaluator_keeps_full_denominator_and_reports_low_frequency():
+    import numpy as np
+    from item2vec.evaluation import BehaviorEvaluator
+    rows = pd.DataFrame([('1','A'),('1','B'),('1','cold')], columns=['order_id','prod_id'])
+    evaluator = BehaviorEvaluator(rows, {'0':'A','1':'B','2':'cold','3':'unused'}, np.array([10, 30, 0, 0]), 0.)
+    vectors = np.array([[1.,0.],[0.,1.],[0.,0.],[0.,0.]], dtype=np.float32)
+    result = evaluator(vectors, vectors.copy(), 1)
+    assert result['warm_macro_recall_at_50'] == 1
+    assert result['weighted_recall_at_50'] == 2/6
+    assert result['low_frequency_sources'] == 1
+    assert result['low_frequency_macro_recall_at_50'] == 1
+
+
+def test_validation_overlap_and_chronology_are_checked(tmp_path):
+    import pytest
+    from item2vec.evaluation import load_validation_orders
+    raw = tmp_path/'raw'
+    raw.mkdir()
+    processed = tmp_path/'processed'
+    processed.mkdir()
+    source = raw/'order_item.csv'
+    source.write_text('order_id,prod_id,dt\ntrain,A,20261001\ntrain,B,20261001\n')
+    val = tmp_path/'validation.csv'
+    val.write_text('order_id,prod_id,dt\ntrain,A,20261002\ntrain,B,20261002\n')
+    with pytest.raises(ValueError, match='overlap'):
+        load_validation_orders(processed, val)
+    val.write_text('order_id,prod_id,dt\nval,A,20260930\nval,B,20261002\n')
+    assert len(load_validation_orders(processed, val)) == 2
+    val.write_text('order_id,prod_id,dt\nval,A,20261001\nval,B,20261001\n')
+    with pytest.raises(ValueError, match='precede'):
+        load_validation_orders(processed, val)
+
+
 def test_split_orders_keeps_complete_orders_in_one_period():
     rows = pd.DataFrame([
         ('old', 'A', '20261001'), ('old', 'B', '20261002'),

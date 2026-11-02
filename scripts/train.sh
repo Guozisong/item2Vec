@@ -5,16 +5,32 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${repository_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
 work_dir="${repository_root}/outputs"
 work_dir_set=
+processed_dir=
+processed_dir_set=
 positionals=()
+training_args=()
+training_options_seen='|'
 candidate_bias_weight=.4
 candidate_bias_weight_set=
 
 usage() {
-    echo "Usage: $0 [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS [CANDIDATE_BIAS_WEIGHT]] [--candidate-bias-weight N] [--work-dir DIR]" >&2
+    echo "Usage: $0 [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS [CANDIDATE_BIAS_WEIGHT]] [--trainer gensim|sgns] [--basket-pair-budget N] [--negative-exclusion target|basket] [--hard-negative-ratio R] [--validation-orders CSV] [--seed N] [--device auto|cpu|cuda] [--candidate-bias-weight N] [--processed-dir DIR] [--work-dir DIR]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --processed-dir)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* && -z "$processed_dir_set" ]] || { usage; exit 2; }
+            processed_dir="$2"
+            processed_dir_set=1
+            shift 2
+            ;;
+        --trainer|--basket-pair-budget|--negative-exclusion|--hard-negative-ratio|--hard-negative-warmup|--hard-negative-pool-size|--pair-batch-size|--validation-orders|--patience|--min-delta|--seed|--device)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* && "$training_options_seen" != *"|$1|"* ]] || { usage; exit 2; }
+            training_options_seen="${training_options_seen}$1|"
+            training_args+=("$1" "$2")
+            shift 2
+            ;;
         --candidate-bias-weight)
             [[ $# -ge 2 && -n "$2" && "$2" != --* && -z "${candidate_bias_weight_set}" ]] || { usage; exit 2; }
             candidate_bias_weight="$2"
@@ -66,7 +82,7 @@ case "$#" in
         ;;
 esac
 
-processed_dir="${work_dir}/processed"
+processed_dir="${processed_dir:-${work_dir}/processed}"
 embeddings_dir="${work_dir}/embeddings"
 for artifact in baskets.jsonl support.npz manifest.json; do
     if [[ ! -f "${processed_dir}/${artifact}" ]]; then
@@ -82,10 +98,11 @@ fi
 mkdir -p "${embeddings_dir}"
 echo "工作目录：${work_dir}"
 cd "${repository_root}"
-python -m item2vec.training "${processed_dir}" "${embeddings_dir}" \
-    --vector-size "${vector_size}" \
-    --max-basket-size "${max_basket_size}" \
-    --negative "${negative}" \
-    --epochs "${epochs}" \
-    --candidate-bias-weight "${candidate_bias_weight}" \
-    --min-order-count "${MIN_ORDER_COUNT:-5}"
+python_args=("${processed_dir}" "${embeddings_dir}" --vector-size "${vector_size}"
+    --max-basket-size "${max_basket_size}" --negative "${negative}" --epochs "${epochs}"
+    --candidate-bias-weight "${candidate_bias_weight}")
+if [[ ${#training_args[@]} -gt 0 ]]; then
+    python_args+=("${training_args[@]}")
+fi
+python_args+=(--min-order-count "${MIN_ORDER_COUNT:-5}")
+python -m item2vec.training "${python_args[@]}"

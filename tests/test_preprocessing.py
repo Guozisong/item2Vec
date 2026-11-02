@@ -71,6 +71,22 @@ def test_preprocess_drops_large_and_empty_catalog_baskets(tmp_path):
     assert report['final_baskets'] == 1
 
 
+def test_compact_loader_preserves_baskets_and_support(tmp_path):
+    raw, embeddings, processed = _fixture(tmp_path, [
+        ('1', 'A', '20261001'), ('1', 'B', '20261001'),
+        ('2', 'B', '20261001'), ('2', 'C', '20261001'), ('2', 'D', '20261001'),
+    ])
+    preprocess_baskets(raw, embeddings, processed, min_co_basket_orders=1)
+    plain, *plain_support = load_processed_baskets(processed, embeddings)
+    compact, *compact_support = load_processed_baskets(processed, embeddings, compact=True)
+    assert len(compact) == len(plain)
+    assert [list(map(str, compact[i])) for i in range(len(compact))] == plain
+    assert compact.items.dtype == np.int32 and compact.offsets.dtype == np.int64
+    for left, right in zip(plain_support[:2], compact_support[:2]):
+        np.testing.assert_array_equal(left, right)
+    assert plain_support[2] == compact_support[2]
+
+
 def test_minimum_applies_after_dedup_and_after_support_filter(tmp_path):
     rows = [(order, item, '20261001') for order in ('one', 'two') for item in 'ABC']
     rows += [('rare', item, '20261001') for item in 'ABD']

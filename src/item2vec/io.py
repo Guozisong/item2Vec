@@ -1,8 +1,20 @@
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+
+def write_json_atomic(value, path):
+    path = Path(path)
+    temporary = path.with_name(path.name + '.tmp')
+    try:
+        with temporary.open('w', encoding='utf-8') as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def write_item_indexes(item_ids, output_path):

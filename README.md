@@ -158,6 +158,36 @@ bash scripts/train.sh 256 30 15 10 0.6 --work-dir "$WORK_DIR"
 
 训练只读取校验通过的 `processed/` 产物。使用 SGNS，负采样指数0.5，高频抽样关闭（`sample=0`），训练后预计算候选偏置。结果写入 `embeddings/behavior_item.npz`，包含输入/上下文向量、候选偏置、商品编码、总订单数和训练配置。
 
+默认训练器仍为 Gensim。可使用新的 PyTorch SGNS，通过每篮损失权重平衡大篮贡献，排除当前整篮商品作为负样本：
+
+```bash
+bash scripts/train.sh 512 30 15 10 0.4 --trainer sgns \
+  --basket-pair-budget 30 --negative-exclusion basket \
+  --hard-negative-ratio 0 --seed 17 --device cuda --work-dir "$WORK_DIR"
+```
+
+`--basket-pair-budget 0` 关闭贡献平衡；正预算使用 `min(1, 预算/[篮大小×(篮大小−1)])` 加权正、负样本损失，保留全部合格商品对。`--pair-batch-size` 默认4096，控制正样本批大小。负样本分布只使用最终训练篮频次，指数0.5。困难负样本默认关闭；设置 `--hard-negative-ratio 0.2` 后，前2轮随机采样，从第3轮尝试12个随机＋3个模型高分负样本（总数15时），候选池默认128；可分别用 `--hard-negative-warmup`、`--hard-negative-pool-size` 调整。
+
+指定 `--validation-orders CSV` 后，每轮验证，默认连续3轮主指标无明显改善时早停，保存最佳轮次；`--patience` 和 `--min-delta` 默认3、0.0001。验证订单须与训练订单无交集、时间更晚，训练原始CSV必须存在以供核验。没有验证文件时按指定轮数训练，保存固定轮次结果。训练历史为工作目录下 `history.json`，最佳验证结果为 `validation.json`。
+
+`--device auto` 默认选择CUDA或CPU；显式CUDA不可用会报错。SGNS专属参数用于Gensim、重复参数或非法组合会报错；完整流水线在取数前先做训练参数预检。`--seed` 两种训练器均支持，默认1。`--processed-dir DIR` 可在独立输出目录训练时读取共享预处理产物，该目录的父目录须保留配套 `raw/order_item.csv`；输出目录仍须有配套商品索引。
+
+推荐使用独立实验目录进行选模，先完成步骤2的商品索引准备：
+
+```bash
+EXP_DIR=/ml/output/experiments/balanced-sgns
+python scripts/tune_item2vec.py prepare --work-dir "$WORK_DIR" \
+  --experiment-dir "$EXP_DIR" --candidate-bias-weight 0.4 --device cuda
+python scripts/tune_item2vec.py run --experiment-dir "$EXP_DIR" --phase ablation
+python scripts/tune_item2vec.py run --experiment-dir "$EXP_DIR" --phase dimensions
+python scripts/tune_item2vec.py run --experiment-dir "$EXP_DIR" --phase confirmation
+python scripts/tune_item2vec.py test --experiment-dir "$EXP_DIR"
+```
+
+校正强度应与本轮基线一致；省略时从现有行为模型的元数据读取，缺少元数据时必须显式指定。默认按最后14天测试、此前14天验证切分，仅对训练期预处理；同一订单整体归入最晚日期。实验先对照旧配方与A0～A3，再按验证结果决定维度和三种子确认。主指标为有行为商品的macro Recall@50，另检查全来源加权召回、低频召回和候选集中度；不读取测试标签选参数。无合格方案时 `selection.json` 记录 `keep_baseline`，不会强行升级。
+
+实验输入、实现代码、冻结配置和模型均校验哈希，并阻止在同一实验中混用依赖版本。已完成的相同配置可复用；不完整的运行会明确报错，使用新实验目录重试。最终测试只评估冻结方案和基线，失败不自动改参数；各模型及 `test_report.json` 留在实验目录，不覆盖生产模型。本地检查范围见[验证记录](docs/2026-11-02-balanced-sgns-validation.md)。详细规则和验收门槛见[实施方案](docs/superpowers/plans/2026-11-02-balanced-sgns-and-model-selection.md)。生产全量重训应使用冻结配方、种子17和验证最佳轮次的中位数，另存模型，不再把已纳入训练的验证期用于早停。
+
 ### 5. query_similar：查询单个商品
 
 ```text

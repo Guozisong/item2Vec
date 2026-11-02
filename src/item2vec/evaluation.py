@@ -4,6 +4,7 @@ import argparse
 import json
 from collections import Counter, defaultdict
 from datetime import timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -31,20 +32,35 @@ def load_item_categories(item_csv):
             if isinstance(description, str) and '，商品品牌为' in description}
 
 
-def evaluate_predictions(orders, predictions, top_k=50, item_categories=None):
-    if top_k < 1:
-        raise ValueError('top_k must be positive')
+def prepare_truth(orders, allowed_items=None):
+    """Prepare immutable-by-convention labels once, optionally for a warm cohort."""
     if not {'order_id', 'prod_id'}.issubset(orders.columns):
         raise ValueError('orders require order_id and prod_id')
-    if not {'master_prod_id', 'slave_prod_id'}.issubset(predictions.columns):
-        raise ValueError('predictions require master_prod_id and slave_prod_id')
     truth = defaultdict(Counter)
     for _, group in orders.groupby('order_id', sort=False):
         basket = list(dict.fromkeys(group.prod_id.astype(str)))
+        if allowed_items is not None:
+            basket = [item for item in basket if item in allowed_items]
+            if len(basket) < 2:
+                continue
         for source in basket:
             truth[source].update(target for target in basket if target != source)
-    if not truth:
+    if not any(truth.values()):
         raise ValueError('test orders contain no multi-item baskets')
+    return dict(truth)
+
+
+def evaluate_predictions(orders, predictions, top_k=50, item_categories=None):
+    return evaluate_rankings(prepare_truth(orders), predictions, top_k, item_categories)
+
+
+def evaluate_rankings(truth, predictions, top_k=50, item_categories=None):
+    if top_k < 1:
+        raise ValueError('top_k must be positive')
+    if not any(truth.values()):
+        raise ValueError('test orders contain no multi-item baskets')
+    if not {'master_prod_id', 'slave_prod_id'}.issubset(predictions.columns):
+        raise ValueError('predictions require master_prod_id and slave_prod_id')
     recommendations = {}
     for source, group in predictions.groupby('master_prod_id', sort=False):
         recommendations[str(source)] = list(dict.fromkeys(group.slave_prod_id.astype(str)))[:top_k]
@@ -52,13 +68,16 @@ def evaluate_predictions(orders, predictions, top_k=50, item_categories=None):
     category_total = {'same': 0, 'cross': 0}
     category_hits = {'same': 0, 'cross': 0}
     ndcgs = []
+    recalls = []
     covered = 0
     for source, targets in truth.items():
         ranked = recommendations.get(source, [])
         covered += bool(ranked)
         unique_total += len(targets)
         weighted_total += sum(targets.values())
-        unique_hits += sum(target in targets for target in ranked)
+        hits = sum(target in targets for target in ranked)
+        unique_hits += hits
+        recalls.append(hits / len(targets) if targets else 0.)
         weighted_hits += sum(targets[target] for target in ranked)
         if item_categories is not None and source in item_categories:
             for target, count in targets.items():
@@ -79,6 +98,7 @@ def evaluate_predictions(orders, predictions, top_k=50, item_categories=None):
     metrics = {
         'sources': len(truth),
         'pair_recall_at_k': unique_hits / unique_total,
+        'macro_recall_at_k': float(np.mean(recalls)),
         'weighted_recall_at_k': weighted_hits / weighted_total,
         'mean_ndcg_at_k': float(np.mean(ndcgs)),
         'source_coverage': covered / len(truth),
@@ -93,6 +113,84 @@ def evaluate_predictions(orders, predictions, top_k=50, item_categories=None):
             )
             metrics[f'{group}_category_pair_count'] = category_total[group]
     return metrics
+
+
+def load_validation_orders(processed_dir, validation_path):
+    rows = pd.read_csv(validation_path, dtype=str, keep_default_na=False)
+    required = {'order_id', 'prod_id', 'dt'}
+    if not required.issubset(rows.columns) or rows.empty:
+        raise ValueError('validation orders require nonempty order_id, prod_id, dt')
+    if any(rows[column].str.strip().eq('').any() for column in required):
+        raise ValueError('validation fields must not be blank')
+    if not rows.dt.str.fullmatch(r'\d{8}').all():
+        raise ValueError('validation dates must use YYYYMMDD')
+    pd.to_datetime(rows.dt.unique(), format='%Y%m%d', errors='raise')
+    validation_ids = set(rows.order_id)
+    first_validation_date = rows.groupby('order_id', sort=False).dt.max().min()
+    source = Path(processed_dir).parent / 'raw' / 'order_item.csv'
+    if not source.is_file():
+        raise ValueError('training raw orders are required to verify validation isolation')
+    last_training_date = ''
+    for chunk in pd.read_csv(source, usecols=['order_id', 'dt'], dtype=str,
+                             keep_default_na=False, chunksize=250000):
+        if chunk.order_id.isin(validation_ids).any():
+            raise ValueError('training and validation order IDs overlap')
+        last_training_date = max(last_training_date, chunk.dt.max())
+    if not last_training_date or last_training_date >= first_validation_date:
+        raise ValueError('training orders must strictly precede validation order dates')
+    return rows
+
+
+class BehaviorEvaluator:
+    """Fixed labels/cohorts; all scoring is delegated to the production ranker."""
+
+    def __init__(self, orders, index2item, train_counts, candidate_bias_weight=.4, item_categories=None):
+        from item2vec.scoring import validate_candidate_bias_weight
+        self.index2item = index2item
+        self.counts = np.asarray(train_counts)
+        if (self.counts.shape != (len(index2item),) or np.any(self.counts < 0)
+                or not np.issubdtype(self.counts.dtype, np.integer)):
+            raise ValueError('evaluation requires one training frequency per catalog item')
+        self.bias_weight = validate_candidate_bias_weight(candidate_bias_weight)
+        self.categories = item_categories
+        self.truth = prepare_truth(orders)
+        active = {str(index2item[str(i)]) for i in np.flatnonzero(self.counts > 0)}
+        self.warm = {source: Counter({target: count for target, count in targets.items() if target in active})
+                     for source, targets in self.truth.items() if source in active}
+        self.warm = {source: targets for source, targets in self.warm.items() if targets}
+        if not self.warm:
+            raise ValueError('validation has no evaluable warm multi-item baskets')
+        low = {str(index2item[str(i)]) for i in np.flatnonzero((self.counts > 0) & (self.counts < 20))}
+        self.low = {source: targets for source, targets in self.warm.items() if source in low}
+        self.sources = [i for i in np.flatnonzero(self.counts > 0)
+                        if str(index2item[str(i)]) in self.truth]
+
+    def __call__(self, vectors, contexts, epoch=None):
+        from item2vec.inference import rank_items
+        from item2vec.scoring import compute_candidate_bias
+        if not np.array_equal(np.any(vectors != 0, axis=1), self.counts > 0):
+            raise ValueError('model active items differ from the fixed training cohort')
+        top_k = min(50, len(self.index2item) - 1)
+        bias = compute_candidate_bias(vectors, contexts, self.bias_weight)
+        predictions = rank_items(np.zeros((len(vectors), 1), dtype=np.float32), self.index2item,
+                                 self.sources, top_k, behavior_vectors=vectors, text_weight=0.,
+                                 behavior_order_counts=self.counts, behavior_context_vectors=contexts,
+                                 recall_mode='complement', candidate_bias=bias)
+        overall = evaluate_rankings(self.truth, predictions, top_k, self.categories)
+        warm = evaluate_rankings(self.warm, predictions, top_k, self.categories)
+        low = evaluate_rankings(self.low, predictions, top_k) if self.low else None
+        return {'warm_macro_recall_at_50': warm['macro_recall_at_k'],
+                'warm_ndcg_at_50': warm['mean_ndcg_at_k'], 'warm_sources': warm['sources'],
+                'warm_source_coverage': warm['source_coverage'],
+                'weighted_recall_at_50': overall['weighted_recall_at_k'],
+                'pair_recall_at_50': overall['pair_recall_at_k'],
+                'source_coverage': overall['source_coverage'], 'sources': overall['sources'],
+                'low_frequency_macro_recall_at_50': low['macro_recall_at_k'] if low else None,
+                'low_frequency_sources': low['sources'] if low else 0,
+                'cross_category_weighted_recall_at_50': overall.get('cross_category_weighted_recall_at_k'),
+                'distinct_candidates': overall['distinct_candidates'],
+                'top100_candidate_share': overall['top100_candidate_share'],
+                'active_items': int((self.counts > 0).sum())}
 
 
 def main(argv=None):

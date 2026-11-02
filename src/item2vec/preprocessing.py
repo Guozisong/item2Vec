@@ -1,6 +1,7 @@
 """Build a reproducible Item2Vec basket dataset from order lines."""
 
 import argparse
+from array import array
 import hashlib
 import io
 import json
@@ -154,7 +155,7 @@ def preprocess_baskets(raw_dir, embeddings_dir, processed_dir, max_basket_size=3
 
 
 def load_processed_baskets(processed_dir, embeddings_dir, max_basket_size=None,
-                           min_co_basket_orders=None):
+                           min_co_basket_orders=None, compact=False):
     processed_dir = Path(processed_dir)
     embeddings_dir = Path(embeddings_dir)
     with (processed_dir / 'manifest.json').open(encoding='utf-8') as stream:
@@ -191,6 +192,8 @@ def load_processed_baskets(processed_dir, embeddings_dir, max_basket_size=None,
             or np.any(all_counts < 0) or np.any(valid_counts < 0)):
         raise ValueError('basket support counts are invalid')
     baskets = []
+    if compact:
+        flat_items, offsets = array('i'), array('q', [0])
     with baskets_path.open(encoding='utf-8') as stream:
         for line in stream:
             record = json.loads(line)
@@ -201,7 +204,15 @@ def load_processed_baskets(processed_dir, embeddings_dir, max_basket_size=None,
                            or valid_counts[index] < parameters['min_co_basket_orders']
                            for index in indexes)):
                 raise ValueError('processed basket contains invalid items')
-            baskets.append([str(index) for index in indexes])
+            if compact:
+                flat_items.extend(indexes)
+                offsets.append(len(flat_items))
+            else:
+                baskets.append([str(index) for index in indexes])
+    if compact:
+        from item2vec.sampling import BasketTable
+        baskets = BasketTable(np.frombuffer(flat_items, dtype=np.int32),
+                              np.frombuffer(offsets, dtype=np.int64))
     if len(baskets) != manifest['counts']['final_baskets']:
         raise ValueError('processed basket count does not match manifest')
     return baskets, all_counts, valid_counts, manifest
