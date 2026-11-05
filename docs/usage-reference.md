@@ -206,3 +206,151 @@ for script in scripts/*.sh; do bash -n "$script" || exit; done
 预处理清单包含过滤计数：`small_baskets` 记录首次过滤中低于下限的篮；`dropped_after_support` 记录移除低支持商品后不够最小篮大小的篮。`support.npz` 顺序写入，不对输出文件执行回退seek，与NumPy读取格式兼容。
 
 最终保留 `raw/`、`processed/`、`embeddings/` 与需要的 `results/`。实验缓存可在不再需要时清理；历史报告引用的临时目录可能已不存在。
+
+## 参数说明
+
+### 购物篮参数
+
+```text
+bash scripts/preprocess_baskets.sh [最大篮 [商品最低支持单数 [最小篮]]] [--work-dir DIR]
+```
+
+| 参数 | 程序默认值 | 说明 |
+| --- | ---: | --- |
+| 最大篮 | 30 | 篮内不同商品数上限 |
+| 商品最低支持单数 | 5 | 商品至少出现在多少个首次过滤合格的篮中 |
+| 最小篮 | 2 | 篮内不同商品数下限；运行示例显式设为3 |
+
+处理顺序：完整订单分组 → 商品去重并移除目录外商品 → 按篮大小过滤 → 移除低支持商品 → 再检查最小篮大小。同细分类购物篮保留。最终篮中商品的出现次数可能因最后一步丢篮而少于首次统计的支持数。
+
+也支持 `--min-basket-size N`，但不能与第三个位置参数同时设置。支持数省略时可由 `MIN_ORDER_COUNT` 环境变量设置；原始订单、索引或过滤参数变化后，需要重新预处理和训练。
+
+### 通用训练参数
+
+```text
+bash scripts/train.sh [维度 最大篮 负采样数 轮数 [候选偏置强度]] [--trainer NAME] [--work-dir DIR]
+```
+
+前四个位置参数必须同时提供或全部省略，程序默认值为 `128 30 15 10`。
+
+| 参数或选项 | 默认值 | 适用范围与约束 |
+| --- | --- | --- |
+| 维度 | 128 | attention 的维度须能被注意力头数整除 |
+| 最大篮 | 30 | 必须与预处理一致；Gensim 将其作为完整篮上下文窗口 |
+| 负采样数 | 15 | attention 每个目标抽取的负样本数；SGNS 每个正商品对的负样本数 |
+| 轮数 | 10 | 固定训练轮数；提供验证集时为最多轮数 |
+| `--trainer` | `gensim` | `gensim`、`sgns`、`attention` |
+| `--seed` | 1 | 三种训练器均支持 |
+| `--device` | `auto` | 仅 attention/sgns：`auto`、`cpu`、`cuda`；CUDA 不可用时显式指定会报错 |
+| `--validation-orders CSV` | 不设置 | 仅 attention/sgns；按验证集指标选最佳轮次 |
+| `--patience` / `--min-delta` | 3 / 0.0001 | 需要验证集；主指标连续若干轮未改善到阈值时早停 |
+| `--processed-dir DIR` | 工作目录内 `processed/` | 读取共享预处理产物；输出目录仍须有配套商品索引 |
+
+**训练的商品支持阈值必须与预处理一致。** 训练默认 `MIN_ORDER_COUNT=5`，最小篮大小自动读取预处理清单。例如预处理使用 `30 8 3`，训练时也必须设置：
+
+```bash
+MIN_ORDER_COUNT=8 bash scripts/train.sh 128 30 15 10 --trainer attention --work-dir "$WORK_DIR"
+```
+
+### 注意力专属参数
+
+| 选项 | 默认值 | 含义 |
+| --- | ---: | --- |
+| `--attention-heads` | 4 | 单层自注意力的头数 |
+| `--temperature` | 0.1 | 两项余弦对比损失的温度，必须大于0 |
+| `--pair-loss-weight` | 1 | 商品对损失权重；0用于仅上下文预测的消融实验 |
+| `--context-batch-size` | 256 | 每批目标样本数，一篮n件商品生成n个目标样本 |
+| `--learning-rate` | 0.001 | 初始学习率，按训练进度线性降低至约1/4 |
+
+只与 `--trainer attention` 一起使用。注意力模型固定排除整篮负样本，不接受下表中的 SGNS 参数，也不使用候选偏置校正。
+
+### 对照用 PyTorch SGNS 参数
+
+| 选项 | 默认值 | 含义 |
+| --- | ---: | --- |
+| `--basket-pair-budget` | 0 | 0关闭篮贡献平衡；正数按篮内商品对数量降低大篮损失权重，保留全部商品对 |
+| `--negative-exclusion` | `basket` | `basket` 排除整篮商品，`target` 只排除当前正样本目标 |
+| `--pair-batch-size` | 4096 | 每批正商品对数量上限 |
+| `--hard-negative-ratio` | 0 | 困难负样本占比，默认关闭 |
+| `--hard-negative-warmup` | 2 | 困难负样本开始前的随机采样轮数 |
+| `--hard-negative-pool-size` | 128 | 困难负样本候选池大小 |
+
+这些参数只与 `--trainer sgns` 一起使用；篮贡献权重与困难负样本例子见[SGNS 与候选校正](usage-reference.md#sgns-与候选校正)。
+
+### 对照用 Gensim / SGNS 候选偏置
+
+第五个位置参数或 `--candidate-bias-weight` 设置校正强度，默认0.4，0关闭，两种写法不能同时使用：
+
+```bash
+bash scripts/train.sh 128 30 15 10 0.6 --trainer gensim --work-dir "$WORK_DIR"
+```
+
+该值在训练时随模型保存，重新导出不会修改旧模型的偏置。它与查询/导出的文本权重是不同参数；**attention 会忽略候选偏置强度，并在日志中说明。**
+
+### 查询与导出参数
+
+```text
+bash scripts/query_similar.sh ITEM_ID [TOPK [RECALL_MODE [TEXT_WEIGHT]]] [--work-dir DIR]
+bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]]]] [--work-dir DIR]
+```
+
+`TOPK` 默认10，导出 `BLOCK_SIZE` 默认512；模式默认 `hybrid`，文本权重默认值由模式决定，见下方召回规则。选项可放在位置参数前后。
+
+## 注意力模型
+
+```text
+购物篮逐个移除目标商品
+  ├─ 其他商品 → 共享向量表 → 一层4头自注意力 → 平均池化 → 归一化
+  │                                                   ↓
+  │                                         与目标/负样本做余弦打分
+  │                                                   ↓
+  │                                             上下文预测损失
+  └─ 目标、同单商品、负样本 → 同一向量表 → 归一化 → 商品对余弦损失
+
+总损失 = 上下文预测损失 + pair-loss-weight × 商品对损失
+最终召回向量 = 共享商品向量表中每个商品的归一化向量
+```
+
+默认128维、4头、前馈层 `128→256→128`，无位置编码，屏蔽补齐位置。每次平均使用完整上下文和随机非空子集的预测损失，随机子集包括单商品上下文；商品对损失在完整正上下文内取平均。负样本按最终训练频次的平方根抽取，排除当前整篮。
+
+注意力参与训练，单商品查询直接使用固定商品向量做余弦检索，不需要运行注意力编码器。完整模型保存在 `attention_model.pt`，目前训练入口不提供断点续训。[详细设计](superpowers/specs/2026-11-04-attention-item2vec-design.md)
+
+## 输入与输出
+
+| 输入文件 | 必需字段 | 约定 |
+| --- | --- | --- |
+| `raw/item.csv` | `prod_id,prod_description` | 同商品保留首条描述；用于文本编码和冷启动分类 |
+| `raw/order_item.csv` | `order_id,prod_id,dt` | `dt` 为 `YYYYMMDD`；可带 `user_id`，当前训练不使用 |
+
+编码按字符串读取，保留前导零。一个完整 `order_id` 对应一个购物篮，不能用用户ID代替。索引与向量必须来自同一商品目录。
+
+```text
+<work-dir>/
+├── raw/          item.csv、order_item.csv
+├── processed/    baskets.jsonl、support.npz、manifest.json
+├── embeddings/   item2index.json、index2item.json、item.feat1CLS
+│                 behavior_item.npz、attention_model.pt（仅attention）
+├── results/      query_<ITEM_ID>.csv、item_similarity_<mode>.csv
+├── history.json       attention/sgns逐轮训练记录
+└── validation.json    attention/sgns有验证集时的最佳验证指标
+```
+
+`processed/manifest.json` 记录过滤参数、计数和文件哈希；训练前核验输入是否配套。`behavior_item.npz` 用于商品召回；注意力产物显式记录 `trainer=attention, behavior_score=cosine`。
+
+## 召回规则
+
+| 模式 | 默认文本权重 | 用途 |
+| --- | ---: | --- |
+| `complement` | 0 | 共购召回，建议显式传入 |
+| `similar` | 0.85 | 偏语义相似 |
+| `hybrid` | 0.60 | 融合相似度，查询/导出脚本默认模式 |
+
+`complement` 按 **自身行为 → 相近商品行为迁移 → 文本回退** 处理。行为和迁移路径只召回有行为向量的商品；文本回退可使用整个目录。文本融合权重设为0也不关闭冷启动回退。
+
+| 输出字段 | 含义 |
+| --- | --- |
+| `master_prod_id` / `slave_prod_id` | 主商品编码 / 候选商品编码 |
+| `similarity` | attention共购模式：余弦或融合余弦；Gensim/SGNS共购模式：百分位；similar/hybrid：融合余弦 |
+| `recall_source` | 仅complement：`behavior`、`behavior_transfer`、`text_fallback` |
+
+自动排除主商品自身，候选不足时可能少于TopK；无行为且文本向量为零时不输出该主商品。分数不是购买概率，不同模型的阈值不能直接复用。迁移与文本回退是推断结果，不代表主商品已发生过共购。
