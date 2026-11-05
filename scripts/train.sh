@@ -14,7 +14,7 @@ candidate_bias_weight=.4
 candidate_bias_weight_set=
 
 usage() {
-    echo "Usage: $0 [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS [CANDIDATE_BIAS_WEIGHT]] [--trainer gensim|sgns] [--basket-pair-budget N] [--negative-exclusion target|basket] [--hard-negative-ratio R] [--validation-orders CSV] [--seed N] [--device auto|cpu|cuda] [--candidate-bias-weight N] [--processed-dir DIR] [--work-dir DIR]" >&2
+    echo "Usage: $0 [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS [CANDIDATE_BIAS_WEIGHT]] [--trainer gensim|sgns|attention] [--basket-pair-budget N] [--negative-exclusion target|basket] [--hard-negative-ratio R] [--validation-orders CSV] [--seed N] [--device auto|cpu|cuda] [--candidate-bias-weight N] [--processed-dir DIR] [--work-dir DIR]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
             processed_dir_set=1
             shift 2
             ;;
-        --trainer|--basket-pair-budget|--negative-exclusion|--hard-negative-ratio|--hard-negative-warmup|--hard-negative-pool-size|--pair-batch-size|--validation-orders|--patience|--min-delta|--seed|--device)
+        --trainer|--attention-heads|--temperature|--pair-loss-weight|--context-batch-size|--learning-rate|--basket-pair-budget|--negative-exclusion|--hard-negative-ratio|--hard-negative-warmup|--hard-negative-pool-size|--pair-batch-size|--validation-orders|--patience|--min-delta|--seed|--device)
             [[ $# -ge 2 && -n "$2" && "$2" != --* && "$training_options_seen" != *"|$1|"* ]] || { usage; exit 2; }
             training_options_seen="${training_options_seen}$1|"
             training_args+=("$1" "$2")

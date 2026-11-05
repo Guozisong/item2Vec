@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import re
 import tempfile
@@ -37,7 +38,7 @@ def _validate_behavior_order_counts(order_counts, item_count):
     return counts
 
 
-def load_trained_artifacts(downstream_dir):
+def load_trained_artifacts(downstream_dir, include_score=False):
     vectors = load_plm_embedding(downstream_dir, file="item.feat1CLS")
     index2item = load_index_item(downstream_dir)
     validate_artifacts(vectors, index2item)
@@ -49,6 +50,16 @@ def load_trained_artifacts(downstream_dir):
         item_ids = artifact['item_ids']
         context_vectors = artifact['context_vectors'] if 'context_vectors' in artifact else None
         candidate_bias = artifact['candidate_bias'] if 'candidate_bias' in artifact else None
+        metadata = json.loads(artifact['metadata'].item()) if 'metadata' in artifact else {}
+        if not isinstance(metadata, dict):
+            raise ValueError('behavior metadata must be a JSON object')
+        behavior_score = metadata.get('behavior_score', 'legacy')
+        if behavior_score not in ('legacy', 'cosine'):
+            raise ValueError('unknown behavior_score in model metadata')
+        if metadata.get('trainer') == 'attention' and behavior_score != 'cosine':
+            raise ValueError('attention artifact requires explicit cosine behavior_score')
+        if behavior_score == 'cosine' and (context_vectors is not None or candidate_bias is not None):
+            raise ValueError('cosine artifacts cannot contain legacy contexts or candidate bias')
         try:
             order_counts = _validate_behavior_order_counts(artifact['order_counts'], len(index2item))
         except (KeyError, ValueError) as error:
@@ -65,7 +76,8 @@ def load_trained_artifacts(downstream_dir):
         if (context_vectors is None or candidate_bias.shape != (len(index2item),)
                 or not np.isfinite(candidate_bias).all()):
             raise ValueError('candidate_bias must contain one finite value per item and requires contexts')
-    return vectors, index2item, behavior_vectors, order_counts, context_vectors, candidate_bias
+    result = (vectors, index2item, behavior_vectors, order_counts, context_vectors, candidate_bias)
+    return result + (behavior_score,) if include_score else result
 
 
 def safe_item_filename(item_id):
@@ -153,6 +165,7 @@ def rank_items(
     recall_mode='hybrid',
     candidate_bias=None,
     item_categories=None,
+    behavior_score='legacy',
 ):
     vectors = np.asarray(vectors)
     validate_artifacts(vectors, index2item)
@@ -162,6 +175,12 @@ def rank_items(
     if recall_mode not in MODE_TEXT_WEIGHTS:
         raise ValueError('recall_mode must be similar, complement, or hybrid')
     text_weight = resolve_text_weight(recall_mode, text_weight)
+    if behavior_score not in ('legacy', 'cosine'):
+        raise ValueError('behavior_score must be legacy or cosine')
+    if behavior_score == 'cosine' and (behavior_context_vectors is not None or candidate_bias is not None):
+        raise ValueError('cosine scoring cannot use legacy contexts or candidate bias')
+    def score_values(values):
+        return values if behavior_score == 'cosine' else _score_percentiles(values)
     if (isinstance(full_confidence_orders, (bool, np.bool_))
             or not isinstance(full_confidence_orders, (int, np.integer))
             or full_confidence_orders < 1):
@@ -237,9 +256,9 @@ def rank_items(
                         if candidate_bias is not None:
                             raw_scores -= candidate_bias[targets]
                     source = 'behavior_transfer'
-                scores = _score_percentiles(raw_scores)
+                scores = score_values(raw_scores)
                 if proxy is not None and text_weight:
-                    scores = ((1 - text_weight) * scores + text_weight * _score_percentiles(
+                    scores = ((1 - text_weight) * scores + text_weight * score_values(
                         normalized[targets] @ normalized[source_index]))
                 ids = np.asarray([str(index2item[str(i)]) for i in targets])
                 ranking = np.lexsort((ids, -scores))[:top_k]
@@ -249,7 +268,7 @@ def rank_items(
                 fallback_block = normalized[fallback_sources] @ normalized.T
                 for row, source_index in enumerate(fallback_sources):
                     targets = np.flatnonzero(np.arange(len(index2item)) != source_index)
-                    scores = _score_percentiles(fallback_block[row, targets])
+                    scores = score_values(fallback_block[row, targets])
                     ids = np.asarray([str(index2item[str(i)]) for i in targets])
                     ranking = np.lexsort((ids, -scores))[:top_k]
                     records.extend((index2item[str(source_index)], index2item[str(targets[i])],
@@ -272,9 +291,9 @@ def rank_items(
                 targets = candidate_indexes[keep]
                 if len(targets) == 0:
                     continue
-                scores = (1 - text_weight) * _score_percentiles(behavior_block[row, keep])
+                scores = (1 - text_weight) * score_values(behavior_block[row, keep])
                 if text_weight:
-                    scores += text_weight * _score_percentiles(text_block[row, keep])
+                    scores += text_weight * score_values(text_block[row, keep])
                 ranking = np.lexsort((candidate_ids[keep], -scores))[:top_k]
                 records.extend((index2item[str(source_index)], index2item[str(targets[i])],
                                 float(scores[i]), 'behavior') for i in ranking)
@@ -311,14 +330,15 @@ def rank_items(
 def query_item(downstream_dir, item_id, top_k=10, text_weight=None,
                recall_mode='hybrid', full_confidence_orders=50, output_dir=None):
     text_weight = resolve_text_weight(recall_mode, text_weight)
+    vectors, index2item, behavior_vectors, order_counts, context_vectors, candidate_bias, behavior_score = load_trained_artifacts(downstream_dir, include_score=True)
+    score_label = "商品向量余弦" if behavior_score == "cosine" else "百分位排名"
     if recall_mode == 'complement':
         print(f"召回模式：complement，文本权重：{text_weight:g}，"
-              f"行为权重：{1 - text_weight:g}（百分位排名），自身行为→行为迁移→文本回退")
+              f"行为权重：{1 - text_weight:g}（{score_label}），自身行为→行为迁移→文本回退")
     else:
         print(f"召回模式：{recall_mode}，文本权重：{text_weight:g}，"
               f"行为权重：{1 - text_weight:g}，满置信订单数：{full_confidence_orders}")
-    print("正在加载训练向量与索引…")
-    vectors, index2item, behavior_vectors, order_counts, context_vectors, candidate_bias = load_trained_artifacts(downstream_dir)
+    print("训练向量与索引已加载。")
     requested_id = str(item_id)
     source_index = next(
         (
@@ -338,6 +358,7 @@ def query_item(downstream_dir, item_id, top_k=10, text_weight=None,
                         behavior_context_vectors=context_vectors,
                         candidate_bias=candidate_bias,
                         item_categories=load_categories(downstream_dir),
+                        behavior_score=behavior_score,
                         recall_mode=recall_mode)
     output_dir = Path(downstream_dir if output_dir is None else output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -350,14 +371,15 @@ def query_item(downstream_dir, item_id, top_k=10, text_weight=None,
 def export_all(downstream_dir, top_k=10, block_size=512, text_weight=None,
                recall_mode='hybrid', full_confidence_orders=50, output_dir=None):
     text_weight = resolve_text_weight(recall_mode, text_weight)
+    vectors, index2item, behavior_vectors, order_counts, context_vectors, candidate_bias, behavior_score = load_trained_artifacts(downstream_dir, include_score=True)
+    score_label = "商品向量余弦" if behavior_score == "cosine" else "百分位排名"
     if recall_mode == 'complement':
         print(f"召回模式：complement，文本权重：{text_weight:g}，"
-              f"行为权重：{1 - text_weight:g}（百分位排名），自身行为→行为迁移→文本回退")
+              f"行为权重：{1 - text_weight:g}（{score_label}），自身行为→行为迁移→文本回退")
     else:
         print(f"召回模式：{recall_mode}，文本权重：{text_weight:g}，"
               f"行为权重：{1 - text_weight:g}，满置信订单数：{full_confidence_orders}")
-    print("正在加载训练向量与索引…")
-    vectors, index2item, behavior_vectors, order_counts, context_vectors, candidate_bias = load_trained_artifacts(downstream_dir)
+    print("训练向量与索引已加载。")
     print("正在计算全量商品相似度…")
     result = rank_items(
         vectors,
@@ -372,6 +394,7 @@ def export_all(downstream_dir, top_k=10, block_size=512, text_weight=None,
         behavior_context_vectors=context_vectors,
         candidate_bias=candidate_bias,
         item_categories=load_categories(downstream_dir),
+        behavior_score=behavior_score,
         full_confidence_orders=full_confidence_orders,
         recall_mode=recall_mode,
     )

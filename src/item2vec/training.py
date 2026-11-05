@@ -213,12 +213,14 @@ def main(argv=None):
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--candidate-bias-weight', type=float, default=.4)
     parser.add_argument('--check-options', action='store_true', help=argparse.SUPPRESS)
-    parser.add_argument('--trainer', choices=['gensim', 'sgns'], default='gensim', action=_Once)
+    parser.add_argument('--trainer', choices=['gensim', 'sgns', 'attention'], default='gensim', action=_Once)
     parser.add_argument('--seed', type=int, action=_Once)
     for option, kind in [('basket-pair-budget', int), ('negative-exclusion', str),
                          ('hard-negative-ratio', float), ('hard-negative-warmup', int),
                          ('hard-negative-pool-size', int), ('pair-batch-size', int),
-                         ('validation-orders', str), ('patience', int), ('min-delta', float), ('device', str)]:
+                         ('validation-orders', str), ('patience', int), ('min-delta', float), ('device', str),
+                         ('attention-heads', int), ('temperature', float), ('pair-loss-weight', float),
+                         ('context-batch-size', int), ('learning-rate', float)]:
         parser.add_argument('--' + option, type=kind, action=_Once)
     args = parser.parse_args(argv)
     validate_candidate_bias_weight(args.candidate_bias_weight)
@@ -230,15 +232,25 @@ def main(argv=None):
         validate_integer(args.seed, 'seed', 0)
     supplied = getattr(args, '_supplied_training_options', set()) - {'trainer', 'seed'}
     if args.trainer == 'gensim' and supplied:
-        raise ValueError(f'SGNS options require --trainer sgns: {sorted(supplied)}')
+        raise ValueError(f'extended training options require --trainer sgns or attention: {sorted(supplied)}')
+    attention_options = {'attention_heads', 'temperature', 'pair_loss_weight', 'context_batch_size', 'learning_rate'}
+    sgns_options = {'basket_pair_budget', 'negative_exclusion', 'hard_negative_ratio',
+                    'hard_negative_warmup', 'hard_negative_pool_size', 'pair_batch_size'}
+    if args.trainer == 'sgns' and supplied & attention_options:
+        raise ValueError('attention options require --trainer attention')
+    if args.trainer == 'attention' and supplied & sgns_options:
+        raise ValueError('SGNS options cannot be used with --trainer attention')
     if not args.validation_orders and ({'patience', 'min_delta'} & supplied):
         raise ValueError('patience and min_delta require --validation-orders')
-    sgns_config = None
-    if args.trainer == 'sgns':
-        from item2vec.sgns import DEFAULTS, validate_config
-        sgns_config = {name: getattr(args, name) for name in DEFAULTS
-                       if hasattr(args, name) and getattr(args, name) is not None}
-        sgns_config = validate_config(sgns_config)
+    trainer_config = None
+    if args.trainer in ('sgns', 'attention'):
+        if args.trainer == 'sgns':
+            from item2vec.sgns import DEFAULTS, validate_config
+        else:
+            from item2vec.attention import DEFAULTS, validate_config
+        trainer_config = {name: getattr(args, name) for name in DEFAULTS
+                          if hasattr(args, name) and getattr(args, name) is not None}
+        trainer_config = validate_config(trainer_config)
     if args.check_options:
         return
 
@@ -252,13 +264,16 @@ def main(argv=None):
         args.processed_dir, args.downstream_dir,
         max_basket_size=args.max_basket_size,
         min_co_basket_orders=args.min_order_count,
-        **({'compact': True} if args.trainer == 'sgns' else {}),
+        **({'compact': True} if args.trainer != 'gensim' else {}),
     )
     stats = manifest['counts']
     print(f'已读取 {stats["input_rows"]} 条行为，包含 {stats["orders"]} 个订单。')
     print(f'已构建 {stats["final_baskets"]} 个有效购物篮，排除 {stats["large_baskets"]} 个超大购物篮，'
           f'商品目录共 {len(item2index)} 个商品。')
-    print(f'候选偏置校正强度：{args.candidate_bias_weight:g}', flush=True)
+    if args.trainer == 'attention':
+        print('召回打分：共享商品向量余弦；candidate-bias-weight 不适用于 attention。', flush=True)
+    else:
+        print(f'候选偏置校正强度：{args.candidate_bias_weight:g}', flush=True)
     metadata = {
         'vector_size': args.vector_size,
         'max_basket_size': args.max_basket_size,
@@ -269,8 +284,11 @@ def main(argv=None):
     }
     if args.seed is not None:
         metadata['seed'] = args.seed
-    if args.trainer == 'sgns':
-        from item2vec.sgns import train_sgns
+    if args.trainer in ('sgns', 'attention'):
+        if args.trainer == 'sgns':
+            from item2vec.sgns import train_sgns as train_behavior
+        else:
+            from item2vec.attention import train_attention as train_behavior
         from item2vec.evaluation import BehaviorEvaluator, load_validation_orders, load_item_categories
         metadata.update(min_basket_size=manifest['parameters'].get('min_basket_size', 2),
                         training_inputs=manifest['inputs'])
@@ -280,7 +298,8 @@ def main(argv=None):
             item_csv = Path(args.processed_dir).parent / 'raw' / 'item.csv'
             categories = load_item_categories(item_csv) if item_csv.is_file() else None
             counts = np.bincount(basket_indexes.items, minlength=len(item2index))
-            evaluator = BehaviorEvaluator(rows, index2item, counts, args.candidate_bias_weight, categories)
+            evaluator = BehaviorEvaluator(rows, index2item, counts, args.candidate_bias_weight, categories,
+                                          behavior_score='cosine' if args.trainer == 'attention' else 'legacy')
             metadata['validation_sha256'] = _sha256(args.validation_orders)
         destination = Path(args.downstream_dir)
         destination.mkdir(parents=True, exist_ok=True)
@@ -292,10 +311,13 @@ def main(argv=None):
         def on_best(vectors, contexts, details):
             write_behavior_embedding(vectors, index2item, all_order_counts, {**metadata, **details},
                                      destination, contexts, args.candidate_bias_weight)
-        result = train_sgns(basket_indexes, len(item2index), sgns_config,
-                            validate_epoch=evaluator, on_epoch=on_epoch, on_best=on_best)
+        result = train_behavior(basket_indexes, len(item2index), trainer_config,
+                                validate_epoch=evaluator, on_epoch=on_epoch, on_best=on_best)
         trained_embedding, context_vectors = result['vectors'], result['context_vectors']
         metadata.update(result['metadata'])
+        if args.trainer == 'attention':
+            from item2vec.attention import save_checkpoint
+            save_checkpoint(result, destination / 'attention_model.pt')
         if evaluator:
             write_json_atomic(result['history'][metadata['best_epoch']-1]['metrics'],
                               destination.parent / 'validation.json')

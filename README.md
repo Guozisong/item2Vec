@@ -156,7 +156,7 @@ bash scripts/train.sh 256 30 15 10 0.6 --work-dir "$WORK_DIR"
 
 `MIN_ORDER_COUNT` 环境变量默认5，须与预处理的第二个位置参数一致；最小篮大小自动读取清单，无需重复传入。例如预处理使用 `30 8 3`，训练时应设置 `MIN_ORDER_COUNT=8`。
 
-训练只读取校验通过的 `processed/` 产物。使用 SGNS，负采样指数0.5，高频抽样关闭（`sample=0`），训练后预计算候选偏置。结果写入 `embeddings/behavior_item.npz`，包含输入/上下文向量、候选偏置、商品编码、总订单数和训练配置。
+训练只读取校验通过的 `processed/` 产物。Gensim/PyTorch SGNS 使用负采样指数0.5，Gensim 高频抽样关闭（`sample=0`），训练后预计算候选偏置。结果写入 `embeddings/behavior_item.npz`，包含输入/上下文向量、候选偏置、商品编码、总订单数和训练配置。注意力模型的训练及产物见下文。
 
 默认训练器仍为 Gensim。可使用新的 PyTorch SGNS，通过每篮损失权重平衡大篮贡献，排除当前整篮商品作为负样本：
 
@@ -188,6 +188,38 @@ python scripts/tune_item2vec.py test --experiment-dir "$EXP_DIR"
 
 实验输入、实现代码、冻结配置和模型均校验哈希，并阻止在同一实验中混用依赖版本。已完成的相同配置可复用；不完整的运行会明确报错，使用新实验目录重试。最终测试只评估冻结方案和基线，失败不自动改参数；各模型及 `test_report.json` 留在实验目录，不覆盖生产模型。本地检查范围见[验证记录](docs/2026-11-02-balanced-sgns-validation.md)。详细规则和验收门槛见[实施方案](docs/superpowers/plans/2026-11-02-balanced-sgns-and-model-selection.md)。生产全量重训应使用冻结配方、种子17和验证最佳轮次的中位数，另存模型，不再把已纳入训练的验证期用于早停。
 
+**注意力训练器：整篮上下文与商品余弦联合学习**
+
+```bash
+bash scripts/train.sh 128 30 15 10 --trainer attention \
+  --attention-heads 4 --temperature 0.1 --pair-loss-weight 1 \
+  --context-batch-size 256 --learning-rate 0.001 \
+  --seed 17 --device auto --work-dir "$WORK_DIR"
+```
+
+每篮逐个移除目标，用其余商品预测目标；目标在注意力计算前移除。一层无位置编码的自注意力加池化处理无序上下文，同时训练共享商品向量之间的余弦对比目标。训练平均使用完整上下文和随机非空子集，子集包括单商品上下文；负样本排除当前整篮商品，抽样频次仅来自最终训练篮。
+
+| 注意力专属参数 | 默认值 | 含义 |
+| --- | ---: | --- |
+| `--attention-heads` | 4 | 注意力头数，向量维度须能被它整除 |
+| `--temperature` | 0.1 | 两项余弦对比损失的温度，须大于0 |
+| `--pair-loss-weight` | 1 | 商品对损失权重；0用于仅上下文消融 |
+| `--context-batch-size` | 256 | 每批目标商品数，一篮n件商品生成n个目标样本 |
+| `--learning-rate` | 0.001 | 初始学习率，按训练进度线性降至初始值的约1/4 |
+
+总损失为上下文预测损失加上商品对损失乘以权重；商品对损失在每个目标的全部正上下文内取平均。商品向量表由两项损失共同更新。`--validation-orders`、`--patience`、`--min-delta`、`--device`、`--seed` 同样适用；有验证时按单商品宏平均Recall@50保存最佳轮次，无验证时保存固定轮次结果。
+
+注意力训练不接受SGNS专属的 `--basket-pair-budget`、`--negative-exclusion`、`--hard-negative-*`、`--pair-batch-size`，两种批大小的样本单位不同。`CANDIDATE_BIAS_WEIGHT` 对注意力模型不生效，训练日志会明确说明。`tune_item2vec.py` 仍用于原Gensim/SGNS实验，尚未纳入注意力模型；注意力对照应使用独立工作目录和相同的训练/验证时间切分。
+
+输出包括归一化商品向量 `embeddings/behavior_item.npz` 和所选轮次的完整模型 `embeddings/attention_model.pt`（编码器、共享向量表、有效商品行映射及训练配置）；当前训练入口不提供断点续训。模型元数据显式记录 `trainer=attention, behavior_score=cosine`，不包含旧上下文向量和候选偏置。已有查询、导出命令自动识别该类型：
+
+```bash
+bash scripts/query_similar.sh ITEM_ID 50 complement 0 --work-dir "$WORK_DIR"
+bash scripts/export_similarities.sh 50 512 complement 0 --work-dir "$WORK_DIR"
+```
+
+注意力模型在 `complement` 且文本权重为0时直接输出商品向量余弦（行为迁移同样归一化）；有文本权重时按权重融合行为和文本余弦，文本回退输出文本余弦。自身排除和冷启动回退链继续生效。旧模型仍使用原有打分及百分位输出。注意力是否改善真实共购效果须通过独立留出集验证，不能以购物篮补全损失下降代替单商品召回验收。[结构与验收设计](docs/superpowers/specs/2026-11-04-attention-item2vec-design.md)；[本地验证记录](docs/2026-11-04-attention-validation.md)
+
 ### 5. query_similar：查询单个商品
 
 ```text
@@ -210,7 +242,7 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 
 | 模式 | 默认文本权重 | 行为打分 | 适用场景 |
 | --- | ---: | --- | --- |
-| `complement` | `0` | 输入向量与候选上下文向量的内积，减去候选偏置，再转百分位排名 | 共购召回 |
+| `complement` | `0` | Gensim/SGNS：输入与上下文内积减偏置后的百分位；attention：同空间商品余弦 | 共购召回 |
 | `similar` | `0.85` | 行为余弦，按商品订单数控制融合强度 | 语义相似 |
 | `hybrid` | `0.60` | 同上 | 文本与行为融合，脚本默认模式 |
 
@@ -243,10 +275,10 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 | --- | --- |
 | `master_prod_id` | 主商品编码 |
 | `slave_prod_id` | 候选商品编码 |
-| `similarity` | `similar/hybrid` 为融合余弦，`complement` 为候选百分位排名分数 |
+| `similarity` | `similar/hybrid` 为融合余弦；`complement` 旧模型为百分位排名，attention模型为余弦或融合余弦 |
 | `recall_source` | 仅 `complement` 输出，取值见上表 |
 
-`complement` 分数不是购买概率，不能沿用旧余弦分数阈值。行为迁移和文本回退是推断结果，不代表该主商品已经发生的共购。直接同单次数用于训练与离线评估，不参与推理排序。
+`complement` 分数不是购买概率。Gensim/SGNS的百分位分数不能沿用余弦分数阈值；attention模型虽输出余弦，不同模型间的阈值仍需验证。行为迁移和文本回退是推断结果，不代表该主商品已经发生的共购。直接同单次数用于训练与离线评估，不参与推理排序。
 
 ## 完整流水线与后台运行
 
@@ -263,6 +295,8 @@ bash scripts/run_pipeline.sh \
 完整流水线使用各阶段默认训练参数（128维、最大篮30、负采样15、10轮）；`--min-basket-size` 默认2，仅传给预处理。若需256维或其他训练参数，使用快速开始中的独立阶段命令。
 
 完整流水线可传 `--candidate-bias-weight 0.6`，仅传给训练阶段，默认0.4。
+
+也可传 `--trainer attention` 及上述注意力专属参数，取数前先校验配置；完整流水线仍使用128维，注意力头数须能整除128。需要其他维度时使用独立训练命令。
 
 任一耗时阶段均可使用 `nohup`：
 

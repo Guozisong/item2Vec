@@ -21,7 +21,7 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --trainer|--basket-pair-budget|--negative-exclusion|--hard-negative-ratio|--hard-negative-warmup|--hard-negative-pool-size|--pair-batch-size|--validation-orders|--patience|--min-delta|--seed|--device)
+        --trainer|--attention-heads|--temperature|--pair-loss-weight|--context-batch-size|--learning-rate|--basket-pair-budget|--negative-exclusion|--hard-negative-ratio|--hard-negative-warmup|--hard-negative-pool-size|--pair-batch-size|--validation-orders|--patience|--min-delta|--seed|--device)
             [[ $# -ge 2 && -n "$2" && "$2" != --* && "$training_options_seen" != *"|$1|"* ]] || { usage; exit 2; }
             training_options_seen="${training_options_seen}$1|"
             training_args+=("$1" "$2")

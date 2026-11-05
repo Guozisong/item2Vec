@@ -270,7 +270,7 @@ def test_query_item_prints_chinese_status_messages(tmp_path, capsys):
 
     assert capsys.readouterr().out == (
         "召回模式：hybrid，文本权重：0.6，行为权重：0.4，满置信订单数：50\n"
-        "正在加载训练向量与索引…\n"
+        "训练向量与索引已加载。\n"
         "正在查询商品 A 的 Top-2 相似商品…\n"
         f"查询完成，共写入 2 条结果：{output_path}\n"
     )
@@ -410,7 +410,7 @@ def test_export_all_shows_block_progress_and_chinese_status_messages(
     ]
     assert capsys.readouterr().out == (
         "召回模式：hybrid，文本权重：0.6，行为权重：0.4，满置信订单数：50\n"
-        "正在加载训练向量与索引…\n"
+        "训练向量与索引已加载。\n"
         "正在计算全量商品相似度…\n"
         f"导出完成，共写入 3 条结果：{output_path}\n"
     )
