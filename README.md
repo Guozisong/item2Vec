@@ -1,14 +1,52 @@
-# Item2Vec 商品共购召回
+# Skip-gram Item2Vec：商品对共购召回
 
-用 M3E/BERT 编码商品文本，用 Item2Vec 学习订单购物篮中的商品关系。共购模式 `complement` 按 **自身行为 → 相近商品行为迁移 → 文本回退** 召回，并标明结果来源。也支持侧重语义的 `similar` 和融合模式 `hybrid`。
+**当前分支：`feature/score-fusion`。主方案：篮内商品对Skip-gram/SGNS，输入向量与上下文向量分开学习。**
+
+本分支用主商品预测同篮其他商品，学习商品对的行为关系；`complement`按输入与上下文内积减候选偏置后排序，输出百分位。文本用于冷启动和可选融合，不参与行为训练。
+
+本分支支持`--trainer gensim`（默认）和`--trainer sgns`。PyTorch SGNS增加可选篮贡献平衡、整篮负样本排除、困难负样本及逐轮验证，但模型仍是商品对模型。**本分支不包含注意力模块，也不支持`--trainer attention`。**
+
+整篮联合上下文与商品余弦方案见[feature/attention-item2vec分支](https://github.com/Guozisong/item2Vec/tree/feature/attention-item2vec)。
+
+## 两个分支的关键区别
+
+下表比较的是各分支的主方案。attention分支仍保留旧训练器作为对照，选择旧训练器时继续使用旧模型语义。
+
+| 比较项 | `feature/score-fusion`：商品对模型 | `feature/attention-item2vec`：注意力模型 |
+| --- | --- | --- |
+| 训练输入 | 一个主商品，预测同篮另一个商品 | 篮内其他商品联合预测被移除的目标 |
+| 样本构造 | n件商品生成n×(n−1)个有方向的正样本对 | n件商品生成n个留一目标样本；另对目标与上下文计算商品对损失 |
+| 模型结构 | 两套向量表：输入U、上下文V；无整篮联合编码器 | 共享向量表E、一层多头自注意力、平均池化 |
+| 训练目标 | SGNS正负样本损失，学习U到V的匹配 | 上下文预测损失＋商品对余弦对比损失，共同更新E |
+| 单品召回打分 | U与候选V内积减偏置，再转换为百分位 | 归一化E之间的余弦，不使用旧候选偏置 |
+| `complement 0`的分数 | 百分位排名，不能当成原始余弦 | 原始商品余弦；迁移与回退路径也用余弦 |
+| 行为模型产物 | `behavior_item.npz`：输入/上下文向量、候选偏置 | 同名NPZ保存归一化商品向量，并额外保存`attention_model.pt` |
+| 训练入口 | `--trainer gensim`或`--trainer sgns` | 主方案必须显式传`--trainer attention` |
+
+两者都使用订单购物篮，文本只用于冷启动与可选融合；都支持自身行为→行为迁移→文本回退。**变化的核心是联合上下文学习，以及训练目标与最终商品余弦空间的直接对齐。** 注意力方案是否提高真实召回，仍需留出集验证。
+
+同名`behavior_item.npz`不代表内部结构或分数相同。attention分支按元数据兼容旧模型；score-fusion没有新余弦类型的显式路由，加载注意力向量也会按旧兼容路径转换成百分位。模型与部署分支应对应，两个方案使用独立输出目录。
+
+## 本分支模型结构
+
+```text
+合格购物篮[A,B,C]
+  → 商品对：A→B、A→C、B→A、B→C、C→A、C→B
+  → 主商品查输入向量表U，正/负候选查上下文向量表V
+  → SGNS损失：提高正商品对分数，降低抽取负样本分数
+  → 导出U、V及候选偏置
+  → 单品查询：U_i·V_j − bias_j → 百分位排名 → TopK
+```
+
+这里没有把篮内其他商品联合编码成一个上下文向量，也没有直接优化U表内商品之间的余弦。`similar/hybrid`可以使用行为余弦融合，但它们不等于本分支`complement`的行为打分。
 
 ## 快速开始
 
-要求 Python 3.9+，将本地 M3E-base 模型放入 `dataset/m3e-base/`，然后在项目根目录执行：
+先准备可安装 `requirements.txt` 中固定依赖的Python环境，将本地 M3E-base 模型放入 `dataset/m3e-base/`，然后在项目根目录执行：
 
 ```bash
 python -m pip install -r requirements.txt
-WORK_DIR=/ml/output/output
+WORK_DIR=/ml/output/item2vec-skipgram
 
 # 1. 准备商品和订单数据；也可使用 ODPS 表或 SQL 文件
 bash scripts/fetch_data.sh \
@@ -21,8 +59,8 @@ bash scripts/generate_embeddings.sh --work-dir "$WORK_DIR"
 # 3. 最大篮30件、商品最低支持5单、最小篮3件
 bash scripts/preprocess_baskets.sh 30 5 3 --work-dir "$WORK_DIR"
 
-# 4. 行为向量256维、最大篮30件、负采样15、训练10轮
-bash scripts/train.sh 256 30 15 10 --work-dir "$WORK_DIR"
+# 4. 本分支默认Gensim商品对模型：256维、最大篮30、负采样15、10轮
+bash scripts/train.sh 256 30 15 10 --trainer gensim --work-dir "$WORK_DIR"
 
 # 5. 查询单品；将 ITEM_ID 替换为商品编码
 bash scripts/query_similar.sh ITEM_ID 50 complement 0 --work-dir "$WORK_DIR"
