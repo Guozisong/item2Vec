@@ -1,6 +1,6 @@
 # 使用参考
 
-主流程与训练器选择见 [README](../README.md)。以下命令在项目根目录执行，沿用README中设置的 `WORK_DIR` 和 `MODEL_DIR`。
+本参考属于`feature/attention-item2vec`分支，主流程是注意力模型；旧训练器仅作对照。主流程与分支区别见 [README](../README.md)。以下命令在项目根目录执行，沿用README中设置的 `WORK_DIR` 和 `MODEL_DIR`。
 
 ## 数据来源
 
@@ -113,6 +113,28 @@ python scripts/tune_item2vec.py test --experiment-dir "$EXP_DIR"
 检查宏平均召回、全来源加权召回、低频召回和候选集中度。没有合格方案时 `selection.json` 记录 `keep_baseline`。最终测试只评估已冻结方案与基线，模型和 `test_report.json` 保存在实验目录，不覆盖生产模型。
 
 输入、代码、配置和模型均校验哈希，阻止混用依赖版本。相同已完成配置可以复用；不完整运行会报错，应使用新实验目录重试。详细门槛见[实施方案](superpowers/plans/2026-11-02-balanced-sgns-and-model-selection.md)。
+
+## 旧训练器对照
+
+以下命令仅在需要比较旧方案时使用，不是注意力主流程。`--trainer gensim`仍为程序默认值；使用旧训练器时，attention分支也继续按旧模型打分。
+
+先按README的步骤1～3为每个对照准备独立工作目录，再分别训练，避免覆盖注意力模型：
+
+```bash
+BASELINE_DIR=/ml/output/item2vec-baseline
+
+# Gensim旧方案
+bash scripts/train.sh 128 30 15 10 --trainer gensim \
+  --seed 17 --work-dir "$BASELINE_DIR"
+
+# 或在另一个配套工作目录中使用PyTorch SGNS
+SGNS_DIR=/ml/output/item2vec-sgns
+bash scripts/train.sh 128 30 15 10 --trainer sgns \
+  --basket-pair-budget 0 --negative-exclusion basket \
+  --hard-negative-ratio 0 --seed 17 --device auto --work-dir "$SGNS_DIR"
+```
+
+商品对模型的`complement`输出百分位，注意力模型输出余弦；对照应比较召回指标，而不是直接比较两种模型的分数大小或复用同一分数阈值。
 
 ## SGNS 与候选校正
 

@@ -1,18 +1,33 @@
-# Item2Vec 商品共购召回
+# Attention Item2Vec：整篮上下文与余弦共购召回
 
-从订单购物篮学习商品行为向量，查询或批量导出商品的 TopK 共购候选。文本向量用于冷启动回退和可选融合，不参与行为向量训练。
+**当前分支：`feature/attention-item2vec`。主方案：整篮上下文注意力＋共享商品向量的余弦联合训练。**
 
-**先选训练器，再按下面的步骤执行。三种训练器共用数据准备、查询与导出命令。**
+本分支的目标是利用整张购物篮的上下文学习商品向量，并直接训练最终用于单品检索的余弦关系。注意力用于训练，召回时导出固定商品向量计算TopK。行为训练不输入商品文本；文本用于冷启动回退与可选融合。
 
-| 训练器 | 如何学习 | `complement` 如何打分 |
+**本分支代码默认训练器仍为`gensim`，不会自动启用注意力；必须显式指定`--trainer attention`。** 旧Gensim/SGNS作为对照保留，命令放在[旧训练器对照](docs/usage-reference.md#旧训练器对照)。本地已验证CPU合成数据，真实数据效果与CUDA路径尚未验证。
+
+旧方案见[feature/score-fusion分支](https://github.com/Guozisong/item2Vec/tree/feature/score-fusion)。
+
+## 两个分支的关键区别
+
+下表比较的是各分支的主方案。attention分支仍保留旧训练器作为对照，选择旧训练器时继续使用旧模型语义。
+
+| 比较项 | `feature/score-fusion`：商品对模型 | `feature/attention-item2vec`：注意力模型 |
 | --- | --- | --- |
-| `attention` | 整篮其他商品预测目标商品；注意力上下文与商品对余弦联合训练 | 同一商品向量空间的余弦 |
-| `gensim` | 篮内商品两两构造 Skip-gram 样本 | 输入与上下文向量内积，减去候选偏置，再转百分位 |
-| `sgns` | PyTorch Skip-gram，可控制篮贡献和负样本 | 与 Gensim 相同 |
+| 训练输入 | 一个主商品，预测同篮另一个商品 | 篮内其他商品联合预测被移除的目标 |
+| 样本构造 | n件商品生成n×(n−1)个有方向的正样本对 | n件商品生成n个留一目标样本；另对目标与上下文计算商品对损失 |
+| 模型结构 | 两套向量表：输入U、上下文V；无整篮联合编码器 | 共享向量表E、一层多头自注意力、平均池化 |
+| 训练目标 | SGNS正负样本损失，学习U到V的匹配 | 上下文预测损失＋商品对余弦对比损失，共同更新E |
+| 单品召回打分 | U与候选V内积减偏置，再转换为百分位 | 归一化E之间的余弦，不使用旧候选偏置 |
+| `complement 0`的分数 | 百分位排名，不能当成原始余弦 | 原始商品余弦；迁移与回退路径也用余弦 |
+| 行为模型产物 | `behavior_item.npz`：输入/上下文向量、候选偏置 | 同名NPZ保存归一化商品向量，并额外保存`attention_model.pt` |
+| 训练入口 | `--trainer gensim`或`--trainer sgns` | 主方案必须显式传`--trainer attention` |
 
-**不传 `--trainer` 时仍使用 `gensim`。** `attention` 是本分支新增方案，已完成本地 CPU 合成数据验证，真实数据效果和 CUDA 路径尚未验证。
+两者都使用订单购物篮，文本只用于冷启动与可选融合；都支持自身行为→行为迁移→文本回退。**变化的核心是联合上下文学习，以及训练目标与最终商品余弦空间的直接对齐。** 注意力方案是否提高真实召回，仍需留出集验证。
 
-[运行步骤](#运行步骤) · [参数说明](#参数说明) · [注意力模型](#注意力模型) · [输入与输出](#输入与输出) · [召回规则](#召回规则) · [验证与运行参考](#验证与运行参考)
+同名`behavior_item.npz`不代表内部结构或分数相同。attention分支按元数据兼容旧模型；score-fusion没有新余弦类型的显式路由，加载注意力向量也会按旧兼容路径转换成百分位。模型与部署分支应对应，两个方案使用独立输出目录。
+
+[分支区别](#两个分支的关键区别) · [运行步骤](#运行步骤) · [参数说明](#参数说明) · [注意力模型](#注意力模型) · [输入与输出](#输入与输出) · [召回规则](#召回规则) · [验证与运行参考](#验证与运行参考)
 
 ## 运行步骤
 
@@ -20,7 +35,7 @@
 
 ```bash
 python -m pip install -r requirements.txt
-WORK_DIR=/ml/output/output
+WORK_DIR=/ml/output/item2vec-attention
 MODEL_DIR=/ml/output/dataset/m3e-base
 ```
 
@@ -52,11 +67,9 @@ bash scripts/preprocess_baskets.sh 30 5 3 --work-dir "$WORK_DIR"
 
 三个数字依次表示：**最大篮30件、商品最低支持5单、最小篮3件**。商品数量按不同商品计数；处理后保留3～30件商品的篮。详细规则见[购物篮参数](#购物篮参数)。
 
-### 4. 训练行为向量：三选一
+### 4. 训练本分支的注意力模型
 
 同一个工作目录中的行为模型会被本次训练结果替换。对照实验请使用独立输出目录。
-
-**A. 注意力模型**
 
 ```bash
 bash scripts/train.sh 128 30 15 10 --trainer attention \
@@ -65,21 +78,7 @@ bash scripts/train.sh 128 30 15 10 --trainer attention \
   --seed 17 --device auto --work-dir "$WORK_DIR"
 ```
 
-**B. 原 Gensim 模型**
-
-```bash
-bash scripts/train.sh 128 30 15 10 --trainer gensim --seed 17 --work-dir "$WORK_DIR"
-```
-
-**C. 可控负采样的 PyTorch SGNS 模型**
-
-```bash
-bash scripts/train.sh 128 30 15 10 --trainer sgns \
-  --basket-pair-budget 0 --negative-exclusion basket \
-  --hard-negative-ratio 0 --seed 17 --device auto --work-dir "$WORK_DIR"
-```
-
-共同的四个位置参数是 **向量维度128、最大篮30、负采样数量15、训练10轮**。`auto` 在 CUDA 可用时用 GPU，否则用 CPU，仅适用于 `attention` 和 `sgns`。
+四个位置参数是 **向量维度128、最大篮30、负采样数量15、训练10轮**。`auto` 在 CUDA 可用时用 GPU，否则用 CPU。
 
 训练输出 `embeddings/behavior_item.npz`。注意力模型还输出完整的 `embeddings/attention_model.pt`。未提供验证集时训练固定轮数；按验证集保存最佳轮次的方法见[训练与验证](docs/usage-reference.md#训练与验证)。
 
@@ -160,7 +159,7 @@ MIN_ORDER_COUNT=8 bash scripts/train.sh 128 30 15 10 --trainer attention --work-
 
 只与 `--trainer attention` 一起使用。注意力模型固定排除整篮负样本，不接受下表中的 SGNS 参数，也不使用候选偏置校正。
 
-### PyTorch SGNS 专属参数
+### 对照用 PyTorch SGNS 参数
 
 | 选项 | 默认值 | 含义 |
 | --- | ---: | --- |
@@ -173,7 +172,7 @@ MIN_ORDER_COUNT=8 bash scripts/train.sh 128 30 15 10 --trainer attention --work-
 
 这些参数只与 `--trainer sgns` 一起使用；篮贡献权重与困难负样本例子见[SGNS 与候选校正](docs/usage-reference.md#sgns-与候选校正)。
 
-### Gensim / SGNS 候选偏置
+### 对照用 Gensim / SGNS 候选偏置
 
 第五个位置参数或 `--candidate-bias-weight` 设置校正强度，默认0.4，0关闭，两种写法不能同时使用：
 
