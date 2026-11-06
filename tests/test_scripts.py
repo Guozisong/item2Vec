@@ -373,14 +373,14 @@ def test_train_script_forwards_default_parameters(tmp_path):
     assert arguments == [
         str(tmp_path / "outputs" / "processed"), str(tmp_path / "outputs" / "embeddings"),
         "--vector-size", "128", "--max-basket-size", "30", "--negative", "15",
-        "--epochs", "10", "--candidate-bias-weight", ".4", "--min-order-count", "5",
+        "--epochs", "10", "--min-order-count", "5",
     ]
 
 
-def test_train_script_forwards_sgns_options(tmp_path):
-    options = ['--trainer','sgns','--basket-pair-budget','30','--negative-exclusion','basket',
-               '--hard-negative-ratio','0.2','--hard-negative-warmup','2','--hard-negative-pool-size','128',
-               '--pair-batch-size','4096','--validation-orders','validation.csv','--patience','3',
+def test_train_script_forwards_attention_options(tmp_path):
+    options = ['--trainer','attention','--attention-heads','4','--temperature','0.1',
+               '--context-batch-size','256','--pair-loss-weight','1','--learning-rate','0.001',
+               '--validation-orders','validation.csv','--patience','3',
                '--min-delta','0.0001','--seed','17','--device','cpu']
     result, arguments = _run_train_script_with_stub(tmp_path, options)
     assert result.returncode == 0
@@ -398,9 +398,9 @@ def test_train_can_read_shared_processed_directory(tmp_path):
     assert forwarded[0] == str(shared)
 
 
-@pytest.mark.parametrize('arguments', [['--trainer'], ['--trainer','sgns','--trainer','sgns'],
+@pytest.mark.parametrize('arguments', [['--trainer'], ['--trainer','attention','--trainer','attention'],
     ['--seed','17','--seed','42']])
-def test_train_script_rejects_repeated_or_missing_sgns_options(tmp_path, arguments):
+def test_train_script_rejects_repeated_or_missing_attention_options(tmp_path, arguments):
     result, forwarded = _run_train_script_with_stub(tmp_path, arguments)
     assert result.returncode != 0 and forwarded == []
 
@@ -412,19 +412,8 @@ def test_train_script_forwards_custom_parameters(tmp_path):
     assert arguments == [
         str(tmp_path / "outputs" / "processed"), str(tmp_path / "outputs" / "embeddings"),
         "--vector-size", "64", "--max-basket-size", "30", "--negative", "4",
-        "--epochs", "6", "--candidate-bias-weight", ".4", "--min-order-count", "5",
+        "--epochs", "6", "--min-order-count", "5",
     ]
-
-
-@pytest.mark.parametrize('arguments,expected', [
-    (['256', '30', '15', '10', '0.6'], '0.6'),
-    (['--candidate-bias-weight', '0.8'], '0.8'),
-    (['--candidate-bias-weight', '0', '256', '30', '15', '10'], '0'),
-])
-def test_train_script_forwards_candidate_bias_weight(tmp_path, arguments, expected):
-    result, forwarded = _run_train_script_with_stub(tmp_path, arguments)
-    assert result.returncode == 0
-    assert forwarded[forwarded.index('--candidate-bias-weight') + 1] == expected
 
 
 @pytest.mark.parametrize('arguments', [
@@ -542,7 +531,6 @@ def test_stage_scripts_reject_invalid_options(tmp_path, script_name, arguments):
     assert result.returncode != 0
     assert "Usage:" in result.stderr
     assert forwarded == []
-
 
 
 def _run_fetch_script_with_stub(tmp_path, arguments):
@@ -740,31 +728,25 @@ def test_pipeline_forwards_minimum_only_to_preprocessing(tmp_path):
     assert all('--min-basket-size' not in calls[i] for i in (0, 1, 3))
 
 
-def test_pipeline_forwards_sgns_options_only_to_training(tmp_path):
+def test_pipeline_forwards_attention_options_only_to_training(tmp_path):
     result, calls = _run_pipeline_with_argument_logging(tmp_path,
-        ['--trainer','sgns','--basket-pair-budget','30','--seed','17'])
+        ['--trainer','attention','--attention-heads','4','--seed','17'])
     assert result.returncode == 0
-    assert calls[3].endswith('--trainer sgns --basket-pair-budget 30 --seed 17')
+    assert calls[3].endswith('--trainer attention --attention-heads 4 --seed 17')
     assert all('--trainer' not in call and '--seed' not in call for call in calls[:3])
 
 
 @pytest.mark.parametrize('arguments', [
-    ['--device','cpu'], ['--hard-negative-ratio','.2'],
+    ['--device','invalid'], ['--hard-negative-ratio','.2'],
+    ['--trainer','gensim'], ['--trainer','sgns'],
     ['--trainer','sgns','--hard-negative-ratio','1'],
-    ['--trainer','sgns','--patience','3'], ['--candidate-bias-weight','-1'],
+    ['--trainer','attention','--patience','3'], ['--candidate-bias-weight','-1'],
     ['--seed','-1'],
 ])
 def test_pipeline_rejects_bad_training_options_before_any_stage(tmp_path,arguments):
     result,calls = _run_pipeline_with_argument_logging(tmp_path,arguments)
     assert result.returncode != 0
     assert calls==[]
-
-
-def test_pipeline_forwards_candidate_bias_weight_only_to_training(tmp_path):
-    result, calls = _run_pipeline_with_argument_logging(tmp_path, ['--candidate-bias-weight', '.8'])
-    assert result.returncode == 0
-    assert calls[3].endswith('--candidate-bias-weight .8')
-    assert all('--candidate-bias-weight' not in call for call in calls[:3])
 
 
 @pytest.mark.parametrize('arguments', [['--candidate-bias-weight'],

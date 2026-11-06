@@ -2,13 +2,7 @@
 
 分支：`feature/attention-item2vec`。利用整篮上下文和商品对联合训练，导出可直接做余弦检索的商品向量。
 
-| 核心区别 | 商品对分支 `score-fusion` | 注意力分支 `attention-item2vec` |
-| --- | --- | --- |
-| 训练方式 | 主商品 → 同篮另一个商品 | 篮内其他商品 → 目标商品，联合学习商品对余弦 |
-| 模型结构 | 输入、上下文两套向量表 | 共享商品向量表＋单层多头自注意力 |
-| 共购打分 | 内积减偏置后的百分位 | 归一化商品向量的余弦 |
-
-**训练必须传`--trainer attention`；省略时程序仍使用Gensim。** [查看另一个分支](https://github.com/Guozisong/item2Vec/tree/feature/score-fusion)
+本分支只提供 **attention** 训练：共享商品向量表＋单层多头自注意力，联合优化整篮上下文预测和商品对余弦。`--trainer attention` 可省略，默认就是注意力模型。
 
 ## 快速开始
 
@@ -44,7 +38,7 @@ bash scripts/query_similar.sh "$ITEM_ID" 50 complement 0 --work-dir "$WORK_DIR"
 bash scripts/export_similarities.sh 50 512 complement 0 --work-dir "$WORK_DIR"
 ```
 
-已有规范的`raw/`数据可跳过第1步；已有配套索引和文本向量可跳过第2步。不同模型使用独立`WORK_DIR`，训练会替换该目录中的行为模型。
+已有规范的`raw/`数据可跳过第1步；已有配套索引和文本向量可跳过第2步。使用独立`WORK_DIR`保存数据和模型，训练会替换该目录中的行为模型。
 
 ## 关键参数
 
@@ -68,11 +62,13 @@ bash scripts/export_similarities.sh 50 512 complement 0 --work-dir "$WORK_DIR"
 - `results/query_<商品编码>.csv`：单商品查询结果。
 - `results/item_similarity_complement.csv`：全部商品的共购候选。
 
-结果包含`master_prod_id`、`slave_prod_id`、`similarity`和`recall_source`。本分支主方案的`complement`分数是**余弦**，不是购买概率；两个分支的分数不能直接比较。
+结果包含`master_prod_id`、`slave_prod_id`、`similarity`和`recall_source`。`complement`分数是**余弦**，不是购买概率。
 
 召回顺序：**自身行为 → 相近商品行为迁移 → 文本回退**。`complement 0`不做文本融合，但无行为商品仍可能回退文本。`recall_source`取`behavior`、`behavior_transfer`或`text_fallback`，分别对应三条路径。查询排除自身，候选不足时少于TopK。文本向量不参与行为训练，但现有查询入口需要它来支持回退。
 
 ## 更多说明
+
+项目代码按职责分为：`data_fetch.py`取数、`embedding.py`文本编码、`preprocessing.py`购物篮处理、`attention.py`模型、`training.py`训练入口、`inference.py`查询与导出。训练只学习订单行为；文本用于推断时的融合和回退。
 
 - [使用参考](docs/usage-reference.md)：完整参数、ODPS/SQL取数、验证选模、流水线和后台运行。
 - [模型设计](docs/superpowers/specs/2026-11-04-attention-item2vec-design.md)与[本地验证](docs/2026-11-04-attention-validation.md)：已验证CPU合成数据；真实效果和CUDA尚未验证。

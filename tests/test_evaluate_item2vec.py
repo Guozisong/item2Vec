@@ -41,9 +41,9 @@ def test_behavior_evaluator_keeps_full_denominator_and_reports_low_frequency():
     import numpy as np
     from item2vec.evaluation import BehaviorEvaluator
     rows = pd.DataFrame([('1','A'),('1','B'),('1','cold')], columns=['order_id','prod_id'])
-    evaluator = BehaviorEvaluator(rows, {'0':'A','1':'B','2':'cold','3':'unused'}, np.array([10, 30, 0, 0]), 0.)
+    evaluator = BehaviorEvaluator(rows, {'0':'A','1':'B','2':'cold','3':'unused'}, np.array([10, 30, 0, 0]))
     vectors = np.array([[1.,0.],[0.,1.],[0.,0.],[0.,0.]], dtype=np.float32)
-    result = evaluator(vectors, vectors.copy(), 1)
+    result = evaluator(vectors, 1)
     assert result['warm_macro_recall_at_50'] == 1
     assert result['weighted_recall_at_50'] == 2/6
     assert result['low_frequency_sources'] == 1

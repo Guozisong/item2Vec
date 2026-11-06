@@ -10,11 +10,9 @@ processed_dir_set=
 positionals=()
 training_args=()
 training_options_seen='|'
-candidate_bias_weight=.4
-candidate_bias_weight_set=
 
 usage() {
-    echo "Usage: $0 [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS [CANDIDATE_BIAS_WEIGHT]] [--trainer gensim|sgns|attention] [--basket-pair-budget N] [--negative-exclusion target|basket] [--hard-negative-ratio R] [--validation-orders CSV] [--seed N] [--device auto|cpu|cuda] [--candidate-bias-weight N] [--processed-dir DIR] [--work-dir DIR]" >&2
+    echo "Usage: $0 [VECTOR_SIZE MAX_BASKET_SIZE NEGATIVE EPOCHS] [--trainer attention] [--attention-heads N] [--temperature N] [--pair-loss-weight N] [--context-batch-size N] [--learning-rate N] [--validation-orders CSV] [--seed N] [--device auto|cpu|cuda] [--processed-dir DIR] [--work-dir DIR]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -25,16 +23,10 @@ while [[ $# -gt 0 ]]; do
             processed_dir_set=1
             shift 2
             ;;
-        --trainer|--attention-heads|--temperature|--pair-loss-weight|--context-batch-size|--learning-rate|--basket-pair-budget|--negative-exclusion|--hard-negative-ratio|--hard-negative-warmup|--hard-negative-pool-size|--pair-batch-size|--validation-orders|--patience|--min-delta|--seed|--device)
+        --trainer|--attention-heads|--temperature|--pair-loss-weight|--context-batch-size|--learning-rate|--validation-orders|--patience|--min-delta|--seed|--device)
             [[ $# -ge 2 && -n "$2" && "$2" != --* && "$training_options_seen" != *"|$1|"* ]] || { usage; exit 2; }
             training_options_seen="${training_options_seen}$1|"
             training_args+=("$1" "$2")
-            shift 2
-            ;;
-        --candidate-bias-weight)
-            [[ $# -ge 2 && -n "$2" && "$2" != --* && -z "${candidate_bias_weight_set}" ]] || { usage; exit 2; }
-            candidate_bias_weight="$2"
-            candidate_bias_weight_set=1
             shift 2
             ;;
         --work-dir)
@@ -66,15 +58,11 @@ case "$#" in
         negative=15
         epochs=10
         ;;
-    4|5)
+    4)
         vector_size="$1"
         max_basket_size="$2"
         negative="$3"
         epochs="$4"
-        if [[ $# -eq 5 ]]; then
-            [[ -z "${candidate_bias_weight_set}" ]] || { usage; exit 2; }
-            candidate_bias_weight="$5"
-        fi
         ;;
     *)
         usage
@@ -83,6 +71,13 @@ case "$#" in
 esac
 
 processed_dir="${processed_dir:-${work_dir}/processed}"
+check_args=("${processed_dir}" "${work_dir}/embeddings" --check-options
+    --vector-size "${vector_size}" --max-basket-size "${max_basket_size}"
+    --negative "${negative}" --epochs "${epochs}" --min-order-count "${MIN_ORDER_COUNT:-5}")
+if [[ ${#training_args[@]} -gt 0 ]]; then
+    check_args+=("${training_args[@]}")
+fi
+python -m item2vec.training "${check_args[@]}"
 embeddings_dir="${work_dir}/embeddings"
 for artifact in baskets.jsonl support.npz manifest.json; do
     if [[ ! -f "${processed_dir}/${artifact}" ]]; then
@@ -99,8 +94,7 @@ mkdir -p "${embeddings_dir}"
 echo "工作目录：${work_dir}"
 cd "${repository_root}"
 python_args=("${processed_dir}" "${embeddings_dir}" --vector-size "${vector_size}"
-    --max-basket-size "${max_basket_size}" --negative "${negative}" --epochs "${epochs}"
-    --candidate-bias-weight "${candidate_bias_weight}")
+    --max-basket-size "${max_basket_size}" --negative "${negative}" --epochs "${epochs}")
 if [[ ${#training_args[@]} -gt 0 ]]; then
     python_args+=("${training_args[@]}")
 fi

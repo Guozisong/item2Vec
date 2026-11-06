@@ -1,6 +1,6 @@
 # 使用参考
 
-本参考属于`feature/attention-item2vec`分支，主流程是注意力模型；旧训练器仅作对照。主流程与分支区别见 [README](../README.md)。以下命令在项目根目录执行，沿用README中设置的 `WORK_DIR` 和 `MODEL_DIR`。
+本参考属于`feature/attention-item2vec`分支，仅支持注意力模型。快速开始见 [README](../README.md)。以下命令在项目根目录执行，沿用README中设置的 `WORK_DIR` 和 `MODEL_DIR`。
 
 ## 数据来源
 
@@ -48,7 +48,7 @@ WHERE dt >= to_char(dateadd(getdate(), -89, 'dd'), 'yyyymmdd');
 
 ## 训练与验证
 
-`attention` 和 `sgns` 提供 `--validation-orders CSV`。训练原始订单必须与验证订单无交集，且训练订单最晚日期早于验证订单的最早订单归属日期；训练原始 `raw/order_item.csv` 必须保留以供核验。
+训练提供 `--validation-orders CSV`。训练原始订单必须与验证订单无交集，且训练订单最晚日期早于验证订单的最早订单归属日期；训练原始 `raw/order_item.csv` 必须保留以供核验。
 
 训练期单独预处理，验证期用于选型，测试期在参数冻结后确认。按完整订单的最晚日期切分；一张订单不会分散到多个时期。默认最后14天测试、此前14天验证，可通过 `--test-days`、`--validation-days` 调整。
 
@@ -94,60 +94,6 @@ python scripts/evaluate_item2vec.py evaluate "$EVAL_DIR/split/test.csv" \
 
 `--processed-dir DIR` 可共享预处理产物，父目录必须保留配套的 `raw/order_item.csv`；每个模型的输出工作目录仍须有匹配的索引。最终全量重训使用已冻结参数和选定轮数，另存工作目录，不再用已纳入训练的验证期选轮数。
 
-## 自动选模
-
-`tune_item2vec.py` **仅覆盖原Gensim与PyTorch SGNS，尚未包含attention**。准备好商品索引后运行：
-
-```bash
-EXP_DIR=/ml/output/experiments/balanced-sgns
-python scripts/tune_item2vec.py prepare --work-dir "$WORK_DIR" \
-  --experiment-dir "$EXP_DIR" --candidate-bias-weight 0.4 --device auto
-python scripts/tune_item2vec.py run --experiment-dir "$EXP_DIR" --phase ablation
-python scripts/tune_item2vec.py run --experiment-dir "$EXP_DIR" --phase dimensions
-python scripts/tune_item2vec.py run --experiment-dir "$EXP_DIR" --phase confirmation
-python scripts/tune_item2vec.py test --experiment-dir "$EXP_DIR"
-```
-
-候选校正强度须与基线一致；省略时读取现有模型元数据，缺失时必须显式指定。默认按最后14天测试、此前14天验证切分，仅训练期预处理，先做旧配方与A0～A3对照，再选维度、进行三种子确认。
-
-检查宏平均召回、全来源加权召回、低频召回和候选集中度。没有合格方案时 `selection.json` 记录 `keep_baseline`。最终测试只评估已冻结方案与基线，模型和 `test_report.json` 保存在实验目录，不覆盖生产模型。
-
-输入、代码、配置和模型均校验哈希，阻止混用依赖版本。相同已完成配置可以复用；不完整运行会报错，应使用新实验目录重试。详细门槛见[实施方案](superpowers/plans/2026-11-02-balanced-sgns-and-model-selection.md)。
-
-## 旧训练器对照
-
-以下命令仅在需要比较旧方案时使用，不是注意力主流程。`--trainer gensim`仍为程序默认值；使用旧训练器时，attention分支也继续按旧模型打分。
-
-先按README的步骤1～3为每个对照准备独立工作目录，再分别训练，避免覆盖注意力模型：
-
-```bash
-BASELINE_DIR=/ml/output/item2vec-baseline
-
-# Gensim旧方案
-bash scripts/train.sh 128 30 15 10 --trainer gensim \
-  --seed 17 --work-dir "$BASELINE_DIR"
-
-# 或在另一个配套工作目录中使用PyTorch SGNS
-SGNS_DIR=/ml/output/item2vec-sgns
-bash scripts/train.sh 128 30 15 10 --trainer sgns \
-  --basket-pair-budget 0 --negative-exclusion basket \
-  --hard-negative-ratio 0 --seed 17 --device auto --work-dir "$SGNS_DIR"
-```
-
-商品对模型的`complement`输出百分位，注意力模型输出余弦；对照应比较召回指标，而不是直接比较两种模型的分数大小或复用同一分数阈值。
-
-## SGNS 与候选校正
-
-`--basket-pair-budget 0` 关闭贡献平衡。预算为正时，每个商品对及其负样本损失的权重为 `min(1, 预算/[篮大小×(篮大小−1)])`，保留全部合格商品对。例如10件商品生成90个有方向的对，预算30时每对权重为1/3，总权重30。
-
-`--negative-exclusion basket` 排除当前整篮商品，`target` 仅排除当前正样本的目标。负样本分布使用最终训练篮频次的0.5次幂，不使用全部原始订单频次。
-
-困难负样本默认关闭。总负采样15、`--hard-negative-ratio 0.2`、预热2轮时，前2轮随机采样，第3轮起尝试12个随机负样本加3个模型高分负样本；候选池默认128。贡献平衡和困难负样本是否有效均需验证。
-
-Gensim和SGNS的候选偏置在训练时计算：一个候选与所有有效输入向量的最高10个内积的均值，乘以校正强度；不足10个取全部。`complement` 从内积中减去该偏置，再转换为百分位排名。非零文本权重融合行为分数与文本余弦各自的百分位。
-
-旧模型缺少上下文向量时使用输入向量余弦，但仍输出百分位；有上下文、缺少偏置时使用未经校正的内积。重新训练才能获得新上下文或新校正设置。attention通过显式元数据选择原始余弦路径，不使用此偏置。
-
 ## 冷启动与融合
 
 `complement` 无自身行为时，在同细分类中找参考商品：至少2个、最多5个、文本余弦不低于0.8，按温度0.1的softmax加权迁移商品行为向量。attention迁移结果归一化后计算余弦；参考不足则文本回退。
@@ -180,7 +126,7 @@ bash scripts/run_pipeline.sh \
 
 取数前先做训练参数预检。流水线使用128维、最大篮30、负采样15、10轮；最低支持默认5，可通过 `MIN_ORDER_COUNT` 环境变量修改，最小篮默认2，可显式设置。注意力头数须能整除128。需要其他维度、轮数或负采样数时使用README中的独立阶段命令。
 
-省略 `--trainer` 仍使用Gensim；`--candidate-bias-weight` 可透传给原模型训练，默认0.4。公共选项 `--work-dir` 默认项目 `outputs/`，`--model-dir` 默认 `dataset/m3e-base/`，位置参数和命名选项可以前后放置。
+省略 `--trainer` 默认使用attention。公共选项 `--work-dir` 默认项目 `outputs/`，`--model-dir` 默认 `dataset/m3e-base/`，位置参数和命名选项可以前后放置。
 
 ## 后台运行与检查
 
@@ -225,24 +171,24 @@ bash scripts/preprocess_baskets.sh [最大篮 [商品最低支持单数 [最小�
 
 也支持 `--min-basket-size N`，但不能与第三个位置参数同时设置。支持数省略时可由 `MIN_ORDER_COUNT` 环境变量设置；原始订单、索引或过滤参数变化后，需要重新预处理和训练。
 
-### 通用训练参数
+### 训练参数
 
 ```text
-bash scripts/train.sh [维度 最大篮 负采样数 轮数 [候选偏置强度]] [--trainer NAME] [--work-dir DIR]
+bash scripts/train.sh [维度 最大篮 负采样数 轮数] [--trainer attention] [--work-dir DIR]
 ```
 
 前四个位置参数必须同时提供或全部省略，程序默认值为 `128 30 15 10`。
 
 | 参数或选项 | 默认值 | 适用范围与约束 |
 | --- | --- | --- |
-| 维度 | 128 | attention 的维度须能被注意力头数整除 |
-| 最大篮 | 30 | 必须与预处理一致；Gensim 将其作为完整篮上下文窗口 |
-| 负采样数 | 15 | attention 每个目标抽取的负样本数；SGNS 每个正商品对的负样本数 |
+| 维度 | 128 | 向量维度须能被注意力头数整除 |
+| 最大篮 | 30 | 必须与预处理一致 |
+| 负采样数 | 15 | 每个目标抽取的负样本数 |
 | 轮数 | 10 | 固定训练轮数；提供验证集时为最多轮数 |
-| `--trainer` | `gensim` | `gensim`、`sgns`、`attention` |
-| `--seed` | 1 | 三种训练器均支持 |
-| `--device` | `auto` | 仅 attention/sgns：`auto`、`cpu`、`cuda`；CUDA 不可用时显式指定会报错 |
-| `--validation-orders CSV` | 不设置 | 仅 attention/sgns；按验证集指标选最佳轮次 |
+| `--trainer` | `attention` | 唯一支持的训练器，可省略 |
+| `--seed` | 1 | 随机种子 |
+| `--device` | `auto` | `auto`、`cpu`、`cuda`；CUDA 不可用时显式指定会报错 |
+| `--validation-orders CSV` | 不设置 | 按验证集指标选最佳轮次 |
 | `--patience` / `--min-delta` | 3 / 0.0001 | 需要验证集；主指标连续若干轮未改善到阈值时早停 |
 | `--processed-dir DIR` | 工作目录内 `processed/` | 读取共享预处理产物；输出目录仍须有配套商品索引 |
 
@@ -262,30 +208,7 @@ MIN_ORDER_COUNT=8 bash scripts/train.sh 128 30 15 10 --trainer attention --work-
 | `--context-batch-size` | 256 | 每批目标样本数，一篮n件商品生成n个目标样本 |
 | `--learning-rate` | 0.001 | 初始学习率，按训练进度线性降低至约1/4 |
 
-只与 `--trainer attention` 一起使用。注意力模型固定排除整篮负样本，不接受下表中的 SGNS 参数，也不使用候选偏置校正。
-
-### 对照用 PyTorch SGNS 参数
-
-| 选项 | 默认值 | 含义 |
-| --- | ---: | --- |
-| `--basket-pair-budget` | 0 | 0关闭篮贡献平衡；正数按篮内商品对数量降低大篮损失权重，保留全部商品对 |
-| `--negative-exclusion` | `basket` | `basket` 排除整篮商品，`target` 只排除当前正样本目标 |
-| `--pair-batch-size` | 4096 | 每批正商品对数量上限 |
-| `--hard-negative-ratio` | 0 | 困难负样本占比，默认关闭 |
-| `--hard-negative-warmup` | 2 | 困难负样本开始前的随机采样轮数 |
-| `--hard-negative-pool-size` | 128 | 困难负样本候选池大小 |
-
-这些参数只与 `--trainer sgns` 一起使用；篮贡献权重与困难负样本例子见[SGNS 与候选校正](usage-reference.md#sgns-与候选校正)。
-
-### 对照用 Gensim / SGNS 候选偏置
-
-第五个位置参数或 `--candidate-bias-weight` 设置校正强度，默认0.4，0关闭，两种写法不能同时使用：
-
-```bash
-bash scripts/train.sh 128 30 15 10 0.6 --trainer gensim --work-dir "$WORK_DIR"
-```
-
-该值在训练时随模型保存，重新导出不会修改旧模型的偏置。它与查询/导出的文本权重是不同参数；**attention 会忽略候选偏置强度，并在日志中说明。**
+负样本固定排除当前整篮商品，按最终训练频次的平方根抽取。
 
 ### 查询与导出参数
 
@@ -329,13 +252,15 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 ├── raw/          item.csv、order_item.csv
 ├── processed/    baskets.jsonl、support.npz、manifest.json
 ├── embeddings/   item2index.json、index2item.json、item.feat1CLS
-│                 behavior_item.npz、attention_model.pt（仅attention）
+│                 behavior_item.npz、attention_model.pt
 ├── results/      query_<ITEM_ID>.csv、item_similarity_<mode>.csv
-├── history.json       attention/sgns逐轮训练记录
-└── validation.json    attention/sgns有验证集时的最佳验证指标
+├── history.json       逐轮训练记录
+└── validation.json    有验证集时的最佳验证指标
 ```
 
 `processed/manifest.json` 记录过滤参数、计数和文件哈希；训练前核验输入是否配套。`behavior_item.npz` 用于商品召回；注意力产物显式记录 `trainer=attention, behavior_score=cosine`。
+
+查询和导出仅接受上述注意力产物；其他训练器的历史产物需要重新训练，不能在本分支直接加载。
 
 ## 召回规则
 
@@ -350,7 +275,7 @@ bash scripts/export_similarities.sh [TOPK [BLOCK_SIZE [RECALL_MODE [TEXT_WEIGHT]
 | 输出字段 | 含义 |
 | --- | --- |
 | `master_prod_id` / `slave_prod_id` | 主商品编码 / 候选商品编码 |
-| `similarity` | attention共购模式：余弦或融合余弦；Gensim/SGNS共购模式：百分位；similar/hybrid：融合余弦 |
+| `similarity` | 共购模式：余弦或融合余弦；similar/hybrid：融合余弦 |
 | `recall_source` | 仅complement：`behavior`、`behavior_transfer`、`text_fallback` |
 
 自动排除主商品自身，候选不足时可能少于TopK；无行为且文本向量为零时不输出该主商品。分数不是购买概率，不同模型的阈值不能直接复用。迁移与文本回退是推断结果，不代表主商品已发生过共购。

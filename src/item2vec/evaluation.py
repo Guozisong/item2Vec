@@ -144,16 +144,12 @@ def load_validation_orders(processed_dir, validation_path):
 class BehaviorEvaluator:
     """Fixed labels/cohorts; all scoring is delegated to the production ranker."""
 
-    def __init__(self, orders, index2item, train_counts, candidate_bias_weight=.4, item_categories=None,
-                 behavior_score='legacy'):
-        from item2vec.scoring import validate_candidate_bias_weight
+    def __init__(self, orders, index2item, train_counts, item_categories=None):
         self.index2item = index2item
         self.counts = np.asarray(train_counts)
         if (self.counts.shape != (len(index2item),) or np.any(self.counts < 0)
                 or not np.issubdtype(self.counts.dtype, np.integer)):
             raise ValueError('evaluation requires one training frequency per catalog item')
-        self.bias_weight = validate_candidate_bias_weight(candidate_bias_weight)
-        self.behavior_score = behavior_score
         self.categories = item_categories
         self.truth = prepare_truth(orders)
         active = {str(index2item[str(i)]) for i in np.flatnonzero(self.counts > 0)}
@@ -167,17 +163,14 @@ class BehaviorEvaluator:
         self.sources = [i for i in np.flatnonzero(self.counts > 0)
                         if str(index2item[str(i)]) in self.truth]
 
-    def __call__(self, vectors, contexts, epoch=None):
+    def __call__(self, vectors, epoch=None):
         from item2vec.inference import rank_items
-        from item2vec.scoring import compute_candidate_bias
         if not np.array_equal(np.any(vectors != 0, axis=1), self.counts > 0):
             raise ValueError('model active items differ from the fixed training cohort')
         top_k = min(50, len(self.index2item) - 1)
-        bias = compute_candidate_bias(vectors, contexts, self.bias_weight) if self.behavior_score != 'cosine' else None
         predictions = rank_items(np.zeros((len(vectors), 1), dtype=np.float32), self.index2item,
                                  self.sources, top_k, behavior_vectors=vectors, text_weight=0.,
-                                 behavior_order_counts=self.counts, behavior_context_vectors=contexts,
-                                 recall_mode='complement', candidate_bias=bias, behavior_score=self.behavior_score)
+                                 behavior_order_counts=self.counts, recall_mode='complement')
         overall = evaluate_rankings(self.truth, predictions, top_k, self.categories)
         warm = evaluate_rankings(self.warm, predictions, top_k, self.categories)
         low = evaluate_rankings(self.low, predictions, top_k) if self.low else None

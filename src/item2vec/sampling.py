@@ -1,4 +1,4 @@
-"""Compact baskets and bounded-memory SGNS pair/negative sampling."""
+"""Compact baskets and whole-basket negative sampling for attention."""
 
 from dataclasses import dataclass
 
@@ -52,44 +52,6 @@ class BasketTable:
         return np.where(positions < sizes[:, None], self.items[indexes.clip(max=len(self.items)-1)], -1)
 
 
-def basket_weights(sizes, budget):
-    validate_integer(budget, 'basket_pair_budget', 0)
-    sizes = np.asarray(sizes)
-    if (sizes.ndim != 1 or not len(sizes) or not np.issubdtype(sizes.dtype, np.integer)
-            or np.any(sizes < 2) or np.any(sizes > 30)):
-        raise ValueError('basket sizes must be integers between 2 and 30')
-    pairs = sizes.astype(np.int64) * (sizes - 1)
-    weights = np.minimum(1., budget / pairs) if budget else np.ones(len(sizes))
-    return weights, float(np.sum(pairs * weights) / pairs.sum())
-
-
-def iter_pair_batches(baskets, budget, batch_size=4096, seed=1, epoch=1):
-    validate_integer(batch_size, 'pair_batch_size')
-    validate_integer(seed, 'seed', 0)
-    validate_integer(epoch, 'epoch')
-    weights, _ = basket_weights(baskets.sizes, budget)
-    rng = np.random.default_rng(np.random.SeedSequence([seed, epoch, 0]))
-    order = rng.permutation(len(baskets))
-    sizes = baskets.sizes
-    templates = {int(size): np.nonzero(~np.eye(size, dtype=bool)) for size in np.unique(sizes)}
-    for start in range(0, len(order), 256):
-        block = order[start:start + 256]
-        sources, targets, owners = [], [], []
-        for size in np.unique(sizes[block]):
-            selected = block[sizes[block] == size]
-            left, right = templates[int(size)]
-            beginnings = baskets.offsets[selected, None]
-            sources.append(baskets.items[beginnings + left].ravel())
-            targets.append(baskets.items[beginnings + right].ravel())
-            owners.append(np.repeat(selected, len(left)))
-        sources, targets, owners = map(np.concatenate, (sources, targets, owners))
-        permutation = rng.permutation(len(sources))
-        for offset in range(0, len(permutation), batch_size):
-            take = permutation[offset:offset + batch_size]
-            yield {'source_ids': sources[take], 'target_ids': targets[take],
-                   'basket_ids': owners[take], 'weights': weights[owners[take]]}
-
-
 class NegativeSampler:
     def __init__(self, counts, exponent=.5, seed=1, device='cpu'):
         import torch
@@ -139,61 +101,17 @@ class NegativeSampler:
             stats['fallback_count'] += amount
         return values
 
-    def sample(self, source_ids, basket_ids, baskets, k, exclusion='basket', hard_ratio=0.,
-               model=None, epoch=1, warmup_epochs=2, pool_size=128, target_ids=None):
+    def sample(self, target_ids, basket_ids, baskets, k):
         validate_integer(k, 'negative')
-        validate_integer(epoch, 'epoch')
-        validate_integer(warmup_epochs, 'hard_negative_warmup', 0)
-        validate_integer(pool_size, 'hard_negative_pool_size')
-        if (isinstance(hard_ratio, (bool, np.bool_)) or not isinstance(hard_ratio, (int, float))
-                or not np.isfinite(hard_ratio) or not 0 <= hard_ratio < 1):
-            raise ValueError('hard_negative_ratio must be finite and in [0, 1)')
-        source_ids = np.asarray(source_ids)
+        target_ids = np.asarray(target_ids)
         basket_ids = np.asarray(basket_ids)
-        if (source_ids.ndim != 1 or not len(source_ids) or source_ids.shape != basket_ids.shape
-                or not np.issubdtype(source_ids.dtype, np.integer)
-                or np.any(source_ids < 0) or np.any(source_ids >= len(self.probabilities))):
-            raise ValueError('invalid source_ids or basket_ids')
-        if exclusion == 'basket':
-            excluded = baskets.padded(basket_ids)
-        elif exclusion == 'target':
-            if target_ids is None:
-                raise ValueError('target_ids is required for target exclusion')
-            excluded = np.asarray(target_ids)
-            if (excluded.shape != source_ids.shape or not np.issubdtype(excluded.dtype, np.integer)
-                    or np.any(excluded < 0) or np.any(excluded >= len(self.probabilities))):
-                raise ValueError('invalid target_ids')
-            excluded = excluded[:, None]
-        else:
-            raise ValueError('negative_exclusion must be target or basket')
+        if (target_ids.ndim != 1 or not len(target_ids) or target_ids.shape != basket_ids.shape
+                or not np.issubdtype(target_ids.dtype, np.integer)
+                or np.any(target_ids < 0) or np.any(target_ids >= len(self.probabilities))):
+            raise ValueError('invalid target_ids or basket_ids')
+        excluded = baskets.padded(basket_ids)
         if np.any(excluded >= len(self.probabilities)):
             raise ValueError('basket item outside negative vocabulary')
         blocked = self.torch.as_tensor(excluded, dtype=self.torch.long, device=self.device)
-        hard_count = int(k * hard_ratio) if epoch > warmup_epochs else 0
-        if hard_count > pool_size:
-            raise ValueError('hard_negative_pool_size is smaller than the hard sample count')
-        stats = {'negative_count': len(source_ids) * k, 'hard_negative_count': len(source_ids) * hard_count,
-                 'resampled_count': 0, 'fallback_count': 0, 'hard_random_fallback_count': 0}
-        negatives = self._draw(blocked, k - hard_count, stats)
-        if hard_count:
-            if model is None:
-                raise ValueError('hard negatives require a model')
-            pool = self._raw(len(blocked), pool_size)
-            with self.torch.no_grad():
-                sources = self.torch.as_tensor(source_ids, dtype=self.torch.long, device=self.device)
-                scores = model.score_candidates(sources, pool)
-                if scores.shape != pool.shape or not self.torch.isfinite(scores).all():
-                    raise ValueError('hard candidate scores must be finite and match the pool')
-                scores = scores.masked_fill(self._invalid(pool, blocked), float('-inf'))
-                chosen_scores, chosen = scores.topk(hard_count, dim=1)
-                hard = pool.gather(1, chosen)
-                missing = ~self.torch.isfinite(chosen_scores)
-                if missing.any():
-                    replacements = self._draw(blocked, hard_count, stats)
-                    hard[missing] = replacements[missing]
-                    replaced = int(missing.sum().item())
-                    stats['fallback_count'] += replaced
-                    stats['hard_random_fallback_count'] += replaced
-                    stats['hard_negative_count'] -= replaced
-            negatives = self.torch.cat((negatives, hard), dim=1)
-        return negatives, stats
+        stats = {'negative_count': len(target_ids) * k, 'resampled_count': 0, 'fallback_count': 0}
+        return self._draw(blocked, k, stats), stats

@@ -57,8 +57,7 @@ def test_both_objectives_update_the_exported_shared_vectors():
 def test_attention_selects_best_epoch_exports_units_and_preserves_cold_rows():
     from item2vec.attention import train_attention
     snapshots = []
-    def validate(v, c, epoch):
-        assert c is None
+    def validate(v, epoch):
         snapshots.append(v.copy())
         return {'warm_macro_recall_at_50': [.2, .3, .1][epoch-1]}
     result = train_attention(baskets(), 6, {'vector_size': 8, 'attention_heads': 2,

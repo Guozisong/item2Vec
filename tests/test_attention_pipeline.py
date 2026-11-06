@@ -34,10 +34,9 @@ def test_attention_cli_trains_validates_exports_and_queries_cosine(tmp_path):
     main([str(processed), str(embeddings), '--trainer', 'attention', '--vector-size', '8',
           '--attention-heads', '2', '--epochs', '3', '--negative', '2', '--min-order-count', '1',
           '--context-batch-size', '4', '--device', 'cpu', '--validation-orders', str(validation)])
-    artifacts = load_trained_artifacts(embeddings, include_score=True)
-    assert len(load_trained_artifacts(embeddings)) == 6
-    _, _, vectors, _, contexts, bias, score = artifacts
-    assert score == 'cosine' and contexts is None and bias is None
+    artifacts = load_trained_artifacts(embeddings)
+    assert len(load_trained_artifacts(embeddings)) == 4
+    _, _, vectors, _ = artifacts
     with np.load(embeddings / 'behavior_item.npz') as archive:
         metadata = json.loads(archive['metadata'].item())
     assert metadata['trainer'] == 'attention' and metadata['behavior_score'] == 'cosine'
@@ -72,7 +71,7 @@ def test_cosine_ranker_uses_raw_cosine_and_normalizes_transferred_behavior():
     index = {str(i): str(i) for i in range(4)}
     out = rank_items(text, index, [0, 3], 2, behavior_vectors=behavior,
                      behavior_order_counts=np.ones(4, dtype=np.int64), text_weight=0,
-                     recall_mode='complement', behavior_score='cosine',
+                     recall_mode='complement',
                      item_categories={str(i): 'category' for i in range(4)})
     direct = out[out.master_prod_id == '0']
     assert direct.similarity.tolist() == pytest.approx([.8, -1.])
@@ -134,3 +133,48 @@ def test_pipeline_forwards_attention_options_and_rejects_invalid_config_before_w
     assert result.returncode == 0, result.stdout + result.stderr
     assert '--context-batch-size\n8' in marker.read_text()
     assert '--attention-heads\n4' in marker.read_text()
+
+
+def test_default_trainer_exports_attention_checkpoint(tmp_path):
+    from item2vec.training import main
+    processed, embeddings = work_dir(tmp_path)
+    main([str(processed), str(embeddings), '--vector-size', '8', '--epochs', '1',
+          '--negative', '2', '--min-order-count', '1', '--device', 'cpu'])
+    with np.load(embeddings / 'behavior_item.npz') as artifact:
+        metadata = json.loads(artifact['metadata'].item())
+        assert metadata['trainer'] == 'attention'
+        assert metadata['behavior_score'] == 'cosine'
+        assert set(artifact.files) == {'vectors', 'item_ids', 'order_counts', 'metadata'}
+    assert (embeddings / 'attention_model.pt').is_file()
+
+
+@pytest.mark.parametrize('trainer', ['gensim', 'sgns'])
+def test_removed_trainers_are_rejected_before_io(trainer):
+    from item2vec.training import main
+    with pytest.raises(SystemExit):
+        main(['missing', 'missing', '--trainer', trainer, '--check-options'])
+
+
+@pytest.mark.parametrize('option,value', [
+    ('--basket-pair-budget', '30'), ('--negative-exclusion', 'basket'),
+    ('--hard-negative-ratio', '.2'), ('--pair-batch-size', '4096'),
+    ('--candidate-bias-weight', '.4'),
+])
+def test_removed_options_are_rejected_before_io(option, value):
+    from item2vec.training import main
+    with pytest.raises(SystemExit):
+        main(['missing', 'missing', '--check-options', option, value])
+
+
+@pytest.mark.parametrize('metadata', [
+    {}, {'trainer': 'gensim'}, {'trainer': 'sgns'},
+    {'trainer': 'attention'}, {'trainer': 'attention', 'behavior_score': 'unknown'},
+])
+def test_loader_rejects_non_attention_artifacts(tmp_path, metadata):
+    from item2vec.inference import load_trained_artifacts
+    _, embeddings = work_dir(tmp_path)
+    np.savez(embeddings / 'behavior_item.npz', vectors=np.eye(5),
+             item_ids=np.array([str(i) for i in range(5)]),
+             order_counts=np.ones(5, dtype=np.int64), metadata=json.dumps(metadata))
+    with pytest.raises(ValueError, match='attention.*train.sh'):
+        load_trained_artifacts(embeddings)

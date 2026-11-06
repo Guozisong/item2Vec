@@ -11,25 +11,19 @@ env_file_set=
 model_dir_set=
 source_args=()
 min_basket_args=()
-candidate_bias_args=()
 training_args=()
 training_options_seen='|'
 
 usage() {
-    echo "Usage: $0 --item-input-{csv|table|query-file} SOURCE --order-input-{csv|table|query-file} SOURCE [--min-basket-size N] [--candidate-bias-weight N] [--work-dir DIR] [--env-file FILE] [--model-dir DIR]" >&2
+    echo "Usage: $0 --item-input-{csv|table|query-file} SOURCE --order-input-{csv|table|query-file} SOURCE [--min-basket-size N] [--trainer attention] [--work-dir DIR] [--env-file FILE] [--model-dir DIR]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --trainer|--attention-heads|--temperature|--pair-loss-weight|--context-batch-size|--learning-rate|--basket-pair-budget|--negative-exclusion|--hard-negative-ratio|--hard-negative-warmup|--hard-negative-pool-size|--pair-batch-size|--validation-orders|--patience|--min-delta|--seed|--device)
+        --trainer|--attention-heads|--temperature|--pair-loss-weight|--context-batch-size|--learning-rate|--validation-orders|--patience|--min-delta|--seed|--device)
             [[ $# -ge 2 && -n "$2" && "$2" != --* && "$training_options_seen" != *"|$1|"* ]] || { usage; exit 2; }
             training_options_seen="${training_options_seen}$1|"
             training_args+=("$1" "$2")
-            shift 2
-            ;;
-        --candidate-bias-weight)
-            [[ $# -ge 2 && -n "$2" && "$2" != --* && ${#candidate_bias_args[@]} -eq 0 ]] || { usage; exit 2; }
-            candidate_bias_args=(--candidate-bias-weight "$2")
             shift 2
             ;;
         --min-basket-size)
@@ -73,9 +67,6 @@ if [[ ${#source_args[@]} -gt 0 ]]; then
 fi
 embedding_args=(--work-dir "${work_dir}")
 train_args=(--work-dir "${work_dir}")
-if [[ ${#candidate_bias_args[@]} -gt 0 ]]; then
-    train_args+=("${candidate_bias_args[@]}")
-fi
 if [[ ${#training_args[@]} -gt 0 ]]; then
     train_args+=("${training_args[@]}")
 fi
@@ -91,10 +82,7 @@ if [[ -n "${model_dir}" ]]; then
 fi
 
 # Check training options before any fetch, embedding or preprocessing writes.
-check_args=("${work_dir}/processed" "${work_dir}/embeddings" --check-options)
-if [[ ${#candidate_bias_args[@]} -gt 0 ]]; then
-    check_args+=("${candidate_bias_args[@]}")
-fi
+check_args=("${work_dir}/processed" "${work_dir}/embeddings" --check-options --min-order-count "${MIN_ORDER_COUNT:-5}")
 if [[ ${#training_args[@]} -gt 0 ]]; then
     check_args+=("${training_args[@]}")
 fi

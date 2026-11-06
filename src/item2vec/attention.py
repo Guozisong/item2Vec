@@ -186,7 +186,7 @@ def train_attention(baskets, item_count, config, validate_epoch=None, on_epoch=N
         model.eval()
         vectors = export()
         started = time.monotonic()
-        metrics = validate_epoch(vectors, None, epoch) if validate_epoch else {}
+        metrics = validate_epoch(vectors, epoch) if validate_epoch else {}
         if any(v is not None and (not isinstance(v, (int, float, np.number)) or not np.isfinite(v))
                for v in metrics.values()):
             raise ValueError('validation metrics must be finite numbers or None')
@@ -199,7 +199,7 @@ def train_attention(baskets, item_count, config, validate_epoch=None, on_epoch=N
             best_vectors = vectors.copy()
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
             if on_best:
-                on_best(best_vectors, None, {**metadata, 'best_epoch': epoch, 'trained_epochs': epoch})
+                on_best(best_vectors, {**metadata, 'best_epoch': epoch, 'trained_epochs': epoch})
         else:
             waiting += 1
         record = {'epoch': epoch, 'loss': loss_sum / trained, 'context_loss': context_sum / trained,
@@ -212,7 +212,7 @@ def train_attention(baskets, item_count, config, validate_epoch=None, on_epoch=N
         if validate_epoch and waiting >= config['patience']:
             break
     metadata.update(best_epoch=best_epoch, trained_epochs=epoch)
-    return {'vectors': best_vectors, 'context_vectors': None, 'history': history, 'metadata': metadata,
+    return {'vectors': best_vectors, 'history': history, 'metadata': metadata,
             'state_dict': best_state, 'active_indexes': active}
 
 

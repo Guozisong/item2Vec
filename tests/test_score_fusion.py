@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from item2vec import inference, training
+from item2vec import inference
 
 
 def test_fusion_defaults_to_hybrid_text_weight():
@@ -49,55 +49,10 @@ def test_fusion_rejects_invalid_weight(weight):
                              behavior_vectors=np.eye(2), text_weight=weight)
 
 
-def test_no_eligible_behavior_stops_training():
-    with pytest.raises(RuntimeError, match='行为共现数据不足'):
-        training.train_item2vec(
-            {'A': 0, 'B': 1}, [['0', '1']], np.array([1, 1]), vector_size=4,
-        )
-
-
 @pytest.mark.parametrize('mode,expected', [('similar', .85), ('complement', 0.), ('hybrid', .60)])
 def test_resolve_text_weight_presets_and_override(mode, expected):
     assert inference.resolve_text_weight(mode, None) == expected
     assert inference.resolve_text_weight(mode, .37) == .37
-
-
-def test_complement_uses_item2vec_context_vectors_when_available():
-    mapping = {'0': 'A', '1': 'B', '2': 'C'}
-    behavior = np.array([[1., 0.], [.9, .1], [0., 1.]])
-    context = np.array([[1., 0.], [0., 1.], [2., 0.]])
-    kwargs = dict(behavior_vectors=behavior, behavior_order_counts=[5, 5, 5],
-                  recall_mode='complement', text_weight=0)
-
-    cosine = inference.rank_items(np.eye(3), mapping, [0], 2, **kwargs)
-    predicted = inference.rank_items(np.eye(3), mapping, [0], 2,
-                                     behavior_context_vectors=context, **kwargs)
-    default_weight = inference.rank_items(
-        np.eye(3), mapping, [0], 2, behavior_vectors=behavior,
-        behavior_context_vectors=context, behavior_order_counts=[5, 5, 5],
-        recall_mode='complement',
-    )
-
-    assert cosine.iloc[0].slave_prod_id == 'B'
-    assert predicted.iloc[0].slave_prod_id == 'C'
-    pd.testing.assert_frame_equal(predicted, default_weight)
-
-
-def test_context_scoring_is_block_invariant_and_requires_matching_shape():
-    mapping = {'0': 'A', '1': 'B', '2': 'C'}
-    behavior = np.array([[1., 0.], [.9, .1], [0., 1.]])
-    context = np.array([[1., 0.], [0., 1.], [2., 0.]])
-    kwargs = dict(behavior_vectors=behavior, behavior_context_vectors=context,
-                  behavior_order_counts=[5, 5, 5], recall_mode='complement',
-                  text_weight=0)
-
-    one = inference.rank_items(np.eye(3), mapping, range(3), 2, block_size=1, **kwargs)
-    many = inference.rank_items(np.eye(3), mapping, range(3), 2, block_size=3, **kwargs)
-    pd.testing.assert_frame_equal(one, many)
-    with pytest.raises(ValueError, match='behavior_context_vectors'):
-        inference.rank_items(np.eye(3), mapping, [0], 2,
-                             behavior_vectors=behavior, behavior_context_vectors=np.eye(3),
-                             behavior_order_counts=[5, 5, 5], recall_mode='complement')
 
 
 @pytest.mark.parametrize('weight', [None, .4])

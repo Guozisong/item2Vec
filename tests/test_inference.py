@@ -17,6 +17,7 @@ def _write_artifacts(path, item_ids, vectors=None):
         vectors=np.zeros((len(item_ids), 3), dtype=np.float32),
         item_ids=np.asarray([str(item_id) for item_id in item_ids]),
         order_counts=np.arange(len(item_ids), dtype=np.int64),
+        metadata=json.dumps(dict(trainer="attention", behavior_score="cosine")),
     )
     (path / "index2item.json").write_text(
         json.dumps({str(index): item_id for index, item_id in enumerate(item_ids)}),
@@ -121,11 +122,6 @@ def test_complement_uses_behavior_cosine_and_excludes_cold_candidates():
     assert result.slave_prod_id.tolist() == ['C', 'B']
 
 
-def test_score_percentiles_give_equal_values_to_ties():
-    np.testing.assert_array_equal(
-        inference._score_percentiles(np.array([3., 1., 3.])),
-        [1., 0., 1.],
-    )
 
 
 def test_complement_is_block_invariant_and_falls_back_for_cold_sources():
@@ -176,17 +172,15 @@ def test_load_trained_artifacts_reads_vectors_and_mapping(tmp_path):
     vectors[1, 1] = 1.0
     _write_artifacts(tmp_path, ["A", "B"], vectors)
 
-    actual_vectors, actual_mapping, behavior_vectors, order_counts, context_vectors, bias = inference.load_trained_artifacts(tmp_path)
+    actual_vectors, actual_mapping, behavior_vectors, order_counts = inference.load_trained_artifacts(tmp_path)
 
     np.testing.assert_array_equal(actual_vectors, vectors)
     assert actual_mapping == {"0": "A", "1": "B"}
     assert behavior_vectors.shape == (2, 3)
     np.testing.assert_array_equal(order_counts, [0, 1])
-    assert context_vectors is None
-    assert bias is None
 
 
-def test_load_trained_artifacts_reads_context_vectors(tmp_path):
+def test_load_trained_artifacts_rejects_context_vectors(tmp_path):
     _write_artifacts(tmp_path, ['A', 'B'])
     path = tmp_path / 'behavior_item.npz'
     with np.load(path, allow_pickle=False) as artifact:
@@ -194,9 +188,8 @@ def test_load_trained_artifacts_reads_context_vectors(tmp_path):
     fields['context_vectors'] = np.ones_like(fields['vectors'])
     np.savez(path, **fields)
 
-    *_, context, bias = inference.load_trained_artifacts(tmp_path)
-
-    np.testing.assert_array_equal(context, fields['context_vectors'])
+    with pytest.raises(ValueError, match="context vectors"):
+        inference.load_trained_artifacts(tmp_path)
 
 
 def test_complement_query_excludes_cold_candidates_with_existing_artifact(tmp_path):
@@ -204,7 +197,8 @@ def test_complement_query_excludes_cold_candidates_with_existing_artifact(tmp_pa
     text[:, :2] = [[1., 0.], [0., 1.], [1., 0.]]
     _write_artifacts(tmp_path, ['A', 'B', 'C'], text)
     np.savez(tmp_path / 'behavior_item.npz', vectors=np.array([[1., 0.], [0., 1.], [0., 0.]]),
-             item_ids=np.array(['A', 'B', 'C']), order_counts=np.array([100, 100, 0]))
+             item_ids=np.array(['A', 'B', 'C']), order_counts=np.array([100, 100, 0]),
+             metadata=json.dumps(dict(trainer='attention', behavior_score='cosine')))
 
     path = inference.query_item(tmp_path, 'A', top_k=2, recall_mode='complement')
 
@@ -457,7 +451,8 @@ def test_main_forwards_export_block_size(
 @pytest.mark.parametrize('counts', [None, [1], [-1, 1], [1.5, 2], [np.nan, 1], [np.inf, 1], [[1], [2]], [True, False], ['1', '2']])
 def test_load_trained_artifacts_rejects_missing_or_invalid_order_counts(tmp_path, counts):
     _write_artifacts(tmp_path, ['A', 'B'])
-    fields = dict(vectors=np.eye(2), item_ids=np.array(['A', 'B']))
+    fields = dict(vectors=np.eye(2), item_ids=np.array(['A', 'B']),
+                  metadata=json.dumps(dict(trainer='attention', behavior_score='cosine')))
     if counts is not None:
         fields['order_counts'] = np.asarray(counts)
     np.savez(tmp_path / 'behavior_item.npz', **fields)
@@ -490,7 +485,8 @@ def test_query_and_export_apply_recall_mode_and_confidence(tmp_path, command, mo
     text[:, 0] = 1.
     _write_artifacts(tmp_path, ['A', 'B'], text)
     np.savez(tmp_path / 'behavior_item.npz', vectors=np.eye(2),
-             item_ids=np.array(['A', 'B']), order_counts=np.array([100, 10]))
+             item_ids=np.array(['A', 'B']), order_counts=np.array([100, 10]),
+             metadata=json.dumps(dict(trainer='attention', behavior_score='cosine')))
     kwargs = dict(top_k=1, recall_mode=mode, text_weight=weight, full_confidence_orders=100)
     if command == 'query':
         path = inference.query_item(tmp_path, 'A', **kwargs)
@@ -509,7 +505,7 @@ def test_query_and_export_log_selected_mode_and_resolved_weights(tmp_path, capsy
     else:
         inference.export_all(tmp_path, **kwargs)
     assert capsys.readouterr().out.splitlines()[0] == (
-        f'召回模式：complement，{expected_weights}（百分位排名），自身行为→行为迁移→文本回退'
+        f'召回模式：complement，{expected_weights}（商品向量余弦），自身行为→行为迁移→文本回退'
     )
 
 
