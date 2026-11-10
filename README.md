@@ -29,6 +29,7 @@ bash scripts/preprocess_baskets.sh 30 5 3 --work-dir "$WORK_DIR"
 
 # 4. 训练：128维、最大篮30、负采样15、10轮
 bash scripts/train.sh 128 30 15 10 --trainer attention \
+  --context-batch-size 256 --learning-rate 0.001 \
   --seed 17 --device auto --work-dir "$WORK_DIR"
 
 # 5. 查询单个商品Top50
@@ -45,13 +46,36 @@ bash scripts/export_similarities.sh 50 512 complement 0 --work-dir "$WORK_DIR"
 | 命令 | 参数顺序 | 示例含义 |
 | --- | --- | --- |
 | `preprocess_baskets.sh 30 5 3` | 最大篮、最低支持单数、最小篮 | 保留3～30件商品的合格篮 |
-| `train.sh 128 30 15 10` | 向量维度、最大篮、负采样数、轮数 | 128维；示例固定训练10轮 |
+| `train.sh 128 30 15 10` | 向量维度、最大篮、负采样数、轮数 | 默认值即此示例；每个目标抽取15个负样本，训练10轮 |
 | `query_similar.sh ID 50 complement 0` | 商品、TopK、模式、文本权重 | 共购模式，文本融合权重0 |
 | `export_similarities.sh 50 512 complement 0` | TopK、分块大小、模式、文本权重 | 每个商品导出50个候选，按512条分块 |
 
-注意力默认4头、温度0.1、商品对损失权重1、批大小256；维度须能被头数整除。
+以下命名参数直接加在 `train.sh` 命令后；不传时使用默认值：
 
-训练最大篮须与预处理一致；最低支持默认5，若改为8，预处理用`30 8 3`，训练也须设置`MIN_ORDER_COUNT=8`。提供验证集时轮数改为上限，并保存最佳模型，见[训练与验证](docs/usage-reference.md#训练与验证)。
+| 训练参数 | 默认值 | 作用与设置说明 |
+| --- | --- | --- |
+| `--context-batch-size` | 256 | 每批最多处理的目标样本数；越大通常越占显存，显存不足时调小 |
+| `--learning-rate` | 0.001 | 初始学习率，训练中线性降低至约1/4；必须大于0 |
+| `--attention-heads` | 4 | 自注意力头数；向量维度须能被头数整除 |
+| `--temperature` | 0.1 | 对比损失温度；越小越强调高低相似度的差别，必须大于0 |
+| `--pair-loss-weight` | 1 | 商品对余弦损失的权重；0表示只训练上下文预测，必须非负 |
+| `--seed` | 1 | 随机种子；快速开始显式使用17，比较配置时保持一致 |
+| `--device` | `auto` | 自动选择CUDA或CPU；也可指定`cpu`或`cuda`，CUDA不可用时指定会报错 |
+| `--validation-orders CSV` | 不设置 | 提供独立验证订单，按验证指标保存最佳轮次；不设置则保存最后一轮 |
+| `--patience` / `--min-delta` | 3 / 0.0001 | 验证主指标连续3轮未改善超过0.0001时早停；仅在提供验证集时可设置 |
+
+**批大小按目标样本计，不按购物篮计。** 一篮3件商品会生成3个“其他商品 → 目标商品”样本。批大小参数名为 `--context-batch-size`，导出命令中的 `512` 是计算分块大小，两者独立。
+
+例如，把训练批大小改为512、学习率改为0.0005：
+
+```bash
+bash scripts/train.sh 128 30 15 10 \
+  --context-batch-size 512 --learning-rate 0.0005 \
+  --attention-heads 4 --temperature 0.1 --pair-loss-weight 1 \
+  --seed 17 --device auto --work-dir "$WORK_DIR"
+```
+
+训练最大篮须与预处理一致；最低支持默认5，若改为8，预处理用`30 8 3`，训练也须设置`MIN_ORDER_COUNT=8`。提供验证集时轮数为训练上限，验证主指标为有行为商品的宏平均Recall@50；训练与验证订单不能重叠，切分方法见[训练与验证](docs/usage-reference.md#训练与验证)。
 
 ## 模型与结果
 
